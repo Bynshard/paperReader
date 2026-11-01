@@ -1,6 +1,7 @@
 // GitHub Windows CI only: unzip the actual release and run it outside the checkout.
 import {_electron} from '@playwright/test';
 import {listPackage} from '@electron/asar';
+import packageChecks from './package-checks.cjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -16,7 +17,7 @@ try{
  execFileSync(process.env.MOONLIGHT_PYTHON||'python',['-c','import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])',manifest.archive,temp]);
  const installed=path.join(temp,'Moonlight-win32-x64');
  const entries=listPackage(path.join(installed,'resources/app.asar'));
- for(const asset of ['worker.min.js','eng.traineddata.gz','chi_sim.traineddata.gz','tesseract-core-lstm.wasm'])assert(entries.some(p=>p.endsWith('/dist/ocr/'+asset)),`Missing offline OCR asset: ${asset}`);
+ packageChecks.checkOfflineOcrAssets(entries);
  assert(entries.every(p=>!/(node_modules|\.env|auth\.json|library\.db|sync-credentials)/.test(p)));
  const env={...process.env};for(const k of Object.keys(env))if(k.startsWith('MOONLIGHT_'))delete env[k];
  Object.assign(env,{MOONLIGHT_USER_DATA:path.join(temp,'profile'),MOONLIGHT_LIBRARY:path.join(temp,'library')});
