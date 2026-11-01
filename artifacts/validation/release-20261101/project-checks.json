@@ -1,0 +1,60 @@
+{
+  "steps": [
+    {
+      "name": "rust_tests",
+      "exit_code": 0,
+      "seconds": 1.038
+    },
+    {
+      "name": "rust_build",
+      "exit_code": 0,
+      "seconds": 0.104
+    },
+    {
+      "name": "frontend_tests",
+      "exit_code": 0,
+      "seconds": 1.861
+    },
+    {
+      "name": "production_build",
+      "exit_code": 0,
+      "seconds": 1.936
+    },
+    {
+      "name": "real_pdf_smoke",
+      "exit_code": 0,
+      "seconds": 1.343
+    },
+    {
+      "name": "responsiveness",
+      "exit_code": 0,
+      "seconds": 4.308
+    },
+    {
+      "name": "zotero_migration",
+      "exit_code": 0,
+      "seconds": 18.183
+    },
+    {
+      "name": "reliability",
+      "exit_code": 0,
+      "seconds": 6.707
+    },
+    {
+      "name": "fault_paths",
+      "exit_code": 0,
+      "seconds": 6.173
+    },
+    {
+      "name": "ai_evidence",
+      "exit_code": 0,
+      "seconds": 1.883
+    },
+    {
+      "name": "cloud_transports",
+      "exit_code": 0,
+      "seconds": 22.022
+    }
+  ],
+  "completed": true
+}

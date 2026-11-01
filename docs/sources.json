@@ -1,0 +1,81 @@
+{
+  "verified_on": "2026-10-31",
+  "timezone": "Asia/Shanghai",
+  "status": "source_review_only_runtime_not_tested",
+  "current_scope": {
+    "focus": "technical_design_source_evaluation_and_prototype_validation",
+    "license_review": "deferred_by_user_not_a_prototype_gate"
+  },
+  "repositories": [
+    {
+      "name": "PaperQuay",
+      "url": "https://github.com/WangQrkkk/PaperQuay",
+      "commit": "1d65fdbfe0eb7ef33c57cf8b9d87b6afdb5f06bf",
+      "license_declared": "AGPL-3.0-only",
+      "role": "desktop_and_library_candidate"
+    },
+    {
+      "name": "PDFMathTranslate-next",
+      "url": "https://github.com/PDFMathTranslate-next/PDFMathTranslate-next",
+      "commit": "f8dffcf4c3a33b254391d43514439b975ce8d966",
+      "version_declared": "2.9.0",
+      "license_declared": "AGPL-3.0",
+      "babeldoc_constraint": ">=0.6.2,<0.7.0",
+      "role": "translation_adapter_entry"
+    },
+    {
+      "name": "BabelDOC",
+      "url": "https://github.com/funstory-ai/BabelDOC",
+      "candidate_package_version": "0.6.2",
+      "package_metadata": "https://pypi.org/pypi/babeldoc/0.6.2/json",
+      "license_declared": "AGPL-3.0",
+      "status": "candidate_not_installed_or_runtime_verified",
+      "role": "compatible_translation_engine"
+    }
+  ],
+  "runtime_candidates": {
+    "python": "3.12",
+    "node": "22.x",
+    "electron": "inherit_and_lock_desktop_baseline",
+    "note": "DS must record exact resolved versions, platform, package hashes and assets after successful clean installation; this file is not a dependency lock."
+  },
+  "documentation": [
+    "https://pdf2zh-next.com/advanced/API/python.html",
+    "https://github.com/funstory-ai/BabelDOC#python-api",
+    "https://github.com/cynicalight/NeoRead/blob/main/docs/pdf-translation.md"
+  ],
+  "reference_only": [
+    {
+      "name": "NeoRead",
+      "url": "https://github.com/cynicalight/NeoRead",
+      "role": "source_reuse_and_layout_preserving_export_candidate",
+      "license_review": "deferred_by_user"
+    },
+    {
+      "name": "EasyRead",
+      "url": "https://github.com/Edwardxlai/easyread",
+      "license_declared": "MIT",
+      "role": "reflow_reading_workflow_reference"
+    }
+  ],
+  "corpus_candidates": [
+    {
+      "title": "HybridFlow: A Flexible and Efficient RLHF Framework",
+      "arxiv": "2409.19256",
+      "url": "https://arxiv.org/abs/2409.19256",
+      "version": null,
+      "sha256": null,
+      "pages": null,
+      "status": "select_version_download_and_freeze_before_test"
+    },
+    {
+      "title": "Attention Is All You Need",
+      "arxiv": "1706.03762",
+      "url": "https://arxiv.org/abs/1706.03762",
+      "version": null,
+      "sha256": null,
+      "pages": null,
+      "status": "select_version_download_and_freeze_before_test"
+    }
+  ]
+}

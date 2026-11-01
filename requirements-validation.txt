@@ -1,0 +1,3 @@
+# Benchmark/fixture generation and local cloud simulation; no model required.
+pymupdf==2.0
+-r requirements-sync-test.txt

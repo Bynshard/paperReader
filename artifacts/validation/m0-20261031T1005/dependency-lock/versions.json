@@ -1,0 +1,11 @@
+{
+  "engine": {
+    "babeldoc": "0.6.2",
+    "babeldoc_cli": "babeldoc 0.6.2",
+    "pymupdf": "2.0",
+    "python": "3.11.15",
+    "executable": "/home/bynshard/themoonlight/.venv/bin/babeldoc"
+  },
+  "python": "3.11.15 (main, Mar 11 2026, 17:20:07) [GCC 14.3.0]",
+  "model": "qwen3.8-flash"
+}

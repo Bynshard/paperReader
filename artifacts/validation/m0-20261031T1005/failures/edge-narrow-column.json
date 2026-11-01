@@ -1,0 +1,37 @@
+{
+  "id": "narrow-column",
+  "input": {
+    "file": "narrow-column.pdf",
+    "bytes": 1463,
+    "sha256": "2ac2ce4dca3c2d3fa1178179d362ee3d76bb72266cb16c180500aa0f9982caec",
+    "open": "ok",
+    "pages": 1,
+    "encrypted": false,
+    "text_chars": 700,
+    "geometry": [
+      {
+        "index": 0,
+        "width": 612.0,
+        "height": 792.0,
+        "rotation": 0,
+        "cropbox": [
+          0.0,
+          0.0,
+          612.0,
+          792.0
+        ],
+        "mediabox": [
+          0.0,
+          0.0,
+          612.0,
+          792.0
+        ]
+      }
+    ],
+    "error": null
+  },
+  "status": "failed",
+  "reason": "RuntimeError: gateway failed: missing env MOONLIGHT_UPSTREAM_KEY",
+  "checks": {},
+  "elapsed_s": 0.1
+}

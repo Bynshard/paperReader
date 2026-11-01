@@ -1,0 +1,196 @@
+[
+  {
+    "id": "corrupt",
+    "input": {
+      "file": "corrupt.pdf",
+      "bytes": 37,
+      "sha256": "8cc28ba81e11bb769a0cf53b89c40711b628d033db1d230c01ca6ed859774d9a",
+      "open": "failed",
+      "pages": null,
+      "encrypted": false,
+      "text_chars": null,
+      "geometry": [],
+      "error": "truncated or malformed PDF (missing %PDF header or %%EOF trailer)"
+    },
+    "status": "rejected",
+    "reason": "truncated or malformed PDF (missing %PDF header or %%EOF trailer)",
+    "checks": {}
+  },
+  {
+    "id": "encrypted",
+    "input": {
+      "file": "encrypted.pdf",
+      "bytes": 1732,
+      "sha256": "902abca37b99cd32a1471f30e098f38a3a1ed690f45c93e90ac576a0a290696d",
+      "open": "needs_password",
+      "pages": null,
+      "encrypted": true,
+      "text_chars": null,
+      "geometry": [],
+      "error": "password protected; reader must ask for a password, translation is refused"
+    },
+    "status": "rejected",
+    "reason": "password protected; reader must ask for a password, translation is refused",
+    "checks": {}
+  },
+  {
+    "id": "narrow-column",
+    "input": {
+      "file": "narrow-column.pdf",
+      "bytes": 1463,
+      "sha256": "2ac2ce4dca3c2d3fa1178179d362ee3d76bb72266cb16c180500aa0f9982caec",
+      "open": "ok",
+      "pages": 1,
+      "encrypted": false,
+      "text_chars": 700,
+      "geometry": [
+        {
+          "index": 0,
+          "width": 612.0,
+          "height": 792.0,
+          "rotation": 0,
+          "cropbox": [
+            0.0,
+            0.0,
+            612.0,
+            792.0
+          ],
+          "mediabox": [
+            0.0,
+            0.0,
+            612.0,
+            792.0
+          ]
+        }
+      ],
+      "error": null
+    },
+    "engine_status": "completed",
+    "elapsed_s": 0,
+    "log": null,
+    "output": "outputs/edge-cases/narrow-column/narrow-column.no_watermark.zh-CN.mono.pdf",
+    "status": "completed",
+    "reason": "",
+    "checks": {
+      "geometry": {
+        "ok": true,
+        "issues": [],
+        "mismatches": []
+      },
+      "target_text": {
+        "chars": 205,
+        "cjk": 170,
+        "cjk_ratio": 0.8293
+      },
+      "overflow": {
+        "spans_outside_page": 0,
+        "degenerate_spans": 0
+      },
+      "column_bleed_blocks": 0,
+      "text_layer_copyable": true,
+      "translated_ratio": 0.2429
+    }
+  },
+  {
+    "id": "rotated-cropbox",
+    "input": {
+      "file": "rotated-cropbox.pdf",
+      "bytes": 1150,
+      "sha256": "8afd2e98d7c273f7f83e1e4a344906cfd35333cec2a7da17853993c255488611",
+      "open": "ok",
+      "pages": 1,
+      "encrypted": false,
+      "text_chars": 350,
+      "geometry": [
+        {
+          "index": 0,
+          "width": 692.0,
+          "height": 540.0,
+          "rotation": 90,
+          "cropbox": [
+            40.0,
+            50.0,
+            580.0,
+            742.0
+          ],
+          "mediabox": [
+            0.0,
+            0.0,
+            612.0,
+            792.0
+          ]
+        }
+      ],
+      "error": null
+    },
+    "engine_status": "completed",
+    "elapsed_s": 0,
+    "log": null,
+    "output": "outputs/edge-cases/rotated-cropbox/rotated-cropbox.no_watermark.zh-CN.mono.pdf",
+    "status": "completed_with_fallbacks",
+    "reason": "text left the page/column; inspect rendering and manifest",
+    "checks": {
+      "geometry": {
+        "ok": true,
+        "issues": [],
+        "mismatches": []
+      },
+      "target_text": {
+        "chars": 91,
+        "cjk": 82,
+        "cjk_ratio": 0.9011
+      },
+      "overflow": {
+        "spans_outside_page": 3,
+        "degenerate_spans": 0
+      },
+      "column_bleed_blocks": 0,
+      "text_layer_copyable": true,
+      "translated_ratio": 0.2343
+    }
+  },
+  {
+    "id": "scanned-page",
+    "input": {
+      "file": "scanned-page.pdf",
+      "bytes": 11223576,
+      "sha256": "1629dd132e73f80c2145a4af1c1e8a12dbd579515041cd4111cad48b410de616",
+      "open": "ok",
+      "pages": 1,
+      "encrypted": false,
+      "text_chars": 0,
+      "geometry": [
+        {
+          "index": 0,
+          "width": 612.0,
+          "height": 792.0,
+          "rotation": 0,
+          "cropbox": [
+            0.0,
+            0.0,
+            612.0,
+            792.0
+          ],
+          "mediabox": [
+            0.0,
+            0.0,
+            612.0,
+            792.0
+          ]
+        }
+      ],
+      "error": null
+    },
+    "engine_status": "failed",
+    "elapsed_s": 6.3,
+    "log": "artifacts/validation/m0-20261031T1005/outputs/edge-cases/scanned-page/babeldoc.log",
+    "status": "unsupported",
+    "reason": "scanned page skipped by engine",
+    "checks": {
+      "text_layer": {
+        "chars": 0,
+        "scanned": true
+      }
+    }
+  }
+]

@@ -1,0 +1,269 @@
+{
+  "schema": 1,
+  "count": 10000,
+  "fixture": "Distinct generated 4–12-page text/vector PDFs plus two existing real papers; not 10k sourced papers",
+  "scope": "Actual Rust JSONL, disk files, PDF extraction and SQLite FTS; excludes Electron IPC and GUI",
+  "environment": {
+    "platform": "Linux-6.8.0-101-generic-x86_64-with-glibc2.39",
+    "cpu": "x86_64",
+    "logical_cpus": 16,
+    "python": "3.11.15",
+    "binary_sha256": "2e4fba8fdcd7a5f6304b907fadc1fbe0f27487759b924cc5a09d024096532782"
+  },
+  "cache": "OS cache not dropped; reopen is process-cold only",
+  "results": {
+    "import_single_pdf": {
+      "runs": 10000,
+      "median_ms": 45.124,
+      "p95_ms": 70.78,
+      "p99_ms": 96.086,
+      "max_ms": 363.909
+    },
+    "process_startup": {
+      "runs": 5,
+      "median_ms": 3.453,
+      "p95_ms": 3.733,
+      "p99_ms": 3.733,
+      "max_ms": 3.733
+    },
+    "recent_first": {
+      "runs": 50,
+      "median_ms": 3.502,
+      "p95_ms": 3.925,
+      "p99_ms": 4.381,
+      "max_ms": 4.381,
+      "response_bytes": 61038,
+      "matches": 10000
+    },
+    "recent_deep": {
+      "runs": 50,
+      "median_ms": 3.09,
+      "p95_ms": 3.236,
+      "p99_ms": 3.381,
+      "max_ms": 3.381,
+      "response_bytes": 60469,
+      "matches": 10000
+    },
+    "sort_title": {
+      "runs": 50,
+      "median_ms": 3.055,
+      "p95_ms": 3.211,
+      "p99_ms": 3.292,
+      "max_ms": 3.292,
+      "response_bytes": 60585,
+      "matches": 10000
+    },
+    "sort_year": {
+      "runs": 50,
+      "median_ms": 3.009,
+      "p95_ms": 3.141,
+      "p99_ms": 3.317,
+      "max_ms": 3.317,
+      "response_bytes": 60469,
+      "matches": 10000
+    },
+    "favorite": {
+      "runs": 50,
+      "median_ms": 1.91,
+      "p95_ms": 2.252,
+      "p99_ms": 2.663,
+      "max_ms": 2.663,
+      "response_bytes": 60387,
+      "matches": 2000
+    },
+    "read_status": {
+      "runs": 50,
+      "median_ms": 2.273,
+      "p95_ms": 2.708,
+      "p99_ms": 2.76,
+      "max_ms": 2.76,
+      "response_bytes": 60788,
+      "matches": 3334
+    },
+    "category": {
+      "runs": 50,
+      "median_ms": 6.521,
+      "p95_ms": 6.853,
+      "p99_ms": 6.969,
+      "max_ms": 6.969,
+      "response_bytes": 60384,
+      "matches": 100
+    },
+    "tag": {
+      "runs": 50,
+      "median_ms": 7.729,
+      "p95_ms": 11.132,
+      "p99_ms": 12.977,
+      "max_ms": 12.977,
+      "response_bytes": 60384,
+      "matches": 100
+    },
+    "search_title_rare": {
+      "runs": 50,
+      "median_ms": 7.773,
+      "p95_ms": 7.991,
+      "p99_ms": 8.167,
+      "max_ms": 8.167,
+      "response_bytes": 655,
+      "matches": 1
+    },
+    "search_body_rare": {
+      "runs": 50,
+      "median_ms": 3.006,
+      "p95_ms": 4.288,
+      "p99_ms": 5.606,
+      "max_ms": 5.606,
+      "response_bytes": 655,
+      "matches": 1
+    },
+    "search_body_common": {
+      "runs": 50,
+      "median_ms": 709.746,
+      "p95_ms": 1491.076,
+      "p99_ms": 1619.839,
+      "max_ms": 1619.839,
+      "response_bytes": 61038,
+      "matches": 10000
+    },
+    "search_no_match": {
+      "runs": 50,
+      "median_ms": 1.642,
+      "p95_ms": 1.934,
+      "p99_ms": 3.481,
+      "max_ms": 3.481,
+      "response_bytes": 52,
+      "matches": 0
+    },
+    "search_short": {
+      "runs": 50,
+      "median_ms": 579.129,
+      "p95_ms": 1310.122,
+      "p99_ms": 1358.722,
+      "max_ms": 1358.722,
+      "response_bytes": 61038,
+      "matches": 10000
+    },
+    "detail": {
+      "runs": 50,
+      "median_ms": 0.114,
+      "p95_ms": 0.164,
+      "p99_ms": 0.368,
+      "max_ms": 0.368,
+      "response_bytes": 1057
+    },
+    "annotations": {
+      "runs": 50,
+      "median_ms": 0.072,
+      "p95_ms": 0.097,
+      "p99_ms": 0.135,
+      "max_ms": 0.135,
+      "response_bytes": 337
+    },
+    "page_blocks": {
+      "runs": 50,
+      "median_ms": 0.079,
+      "p95_ms": 0.106,
+      "p99_ms": 0.132,
+      "max_ms": 0.132,
+      "response_bytes": 2608
+    },
+    "paper_pdf_path": {
+      "runs": 50,
+      "median_ms": 0.067,
+      "p95_ms": 0.088,
+      "p99_ms": 0.099,
+      "max_ms": 0.099,
+      "response_bytes": 204
+    },
+    "taxonomy": {
+      "runs": 50,
+      "median_ms": 0.429,
+      "p95_ms": 0.505,
+      "p99_ms": 0.562,
+      "max_ms": 0.562,
+      "response_bytes": 19231
+    },
+    "note_save": {
+      "runs": 50,
+      "median_ms": 8.956,
+      "p95_ms": 12.693,
+      "p99_ms": 27.786,
+      "max_ms": 27.786,
+      "response_bytes": 1031
+    },
+    "export_100": {
+      "runs": 50,
+      "median_ms": 4.302,
+      "p95_ms": 4.677,
+      "p99_ms": 4.956,
+      "max_ms": 4.956,
+      "response_bytes": 12808
+    },
+    "interactive_during_import": {
+      "runs": 1,
+      "median_ms": 1975.098,
+      "p95_ms": 1975.098,
+      "p99_ms": 1975.098,
+      "max_ms": 1975.098,
+      "operations": [
+        "ping"
+      ],
+      "batch_seconds": 2.005,
+      "batch_count": 40
+    },
+    "navigation_soak": {
+      "runs": 3000,
+      "median_ms": 0.24,
+      "p95_ms": 2.905,
+      "p99_ms": 3.049,
+      "max_ms": 3.492
+    }
+  },
+  "failures": [
+    "interactive_during_import: p95 1975.098 > 100 ms",
+    "search_body_common: p95 1491.076 > 200 ms"
+  ],
+  "generation_seconds": 260.824,
+  "import_progress": 10000,
+  "import_seconds": 468.151,
+  "memory_after_import": {
+    "rss_mib": 47.98,
+    "pss_mib": 45.947,
+    "processes": 1
+  },
+  "memory_before_soak": {
+    "rss_mib": 16.984,
+    "pss_mib": 14.94,
+    "processes": 1
+  },
+  "memory_after_soak": {
+    "rss_mib": 16.984,
+    "pss_mib": 14.94,
+    "processes": 1
+  },
+  "protocol_errors": [],
+  "counts": {
+    "papers": 10000,
+    "versions": 10000,
+    "blocks": 400308,
+    "annotations": 10000,
+    "paper_categories": 10000,
+    "paper_tags": 20000
+  },
+  "integrity_check": "ok",
+  "library_bytes": 878004430,
+  "budgets_ms_p95": {
+    "process_startup": 2000,
+    "interactive_during_import": 100,
+    "recent_first": 100,
+    "recent_deep": 100,
+    "sort_title": 100,
+    "sort_year": 100,
+    "search_body_common": 200,
+    "search_body_rare": 200,
+    "detail": 100,
+    "note_save": 100,
+    "navigation_soak": 100
+  },
+  "completed": true
+}

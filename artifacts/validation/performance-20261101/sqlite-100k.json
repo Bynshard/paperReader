@@ -1,0 +1,62 @@
+{
+  "results": {
+    "favorite": {
+      "matching_papers": 50000,
+      "max_ms": 2.53621,
+      "median_ms": 2.253135,
+      "p95_ms": 2.365948,
+      "response_bytes": 26680,
+      "runs": 30
+    },
+    "recent_deep": {
+      "matching_papers": 100000,
+      "max_ms": 8.851708,
+      "median_ms": 6.944136,
+      "p95_ms": 8.83163,
+      "response_bytes": 26115,
+      "runs": 30
+    },
+    "recent_first": {
+      "matching_papers": 100000,
+      "max_ms": 5.632538,
+      "median_ms": 4.390873,
+      "p95_ms": 4.684488,
+      "response_bytes": 26731,
+      "runs": 30
+    },
+    "substring_body": {
+      "matching_papers": 100,
+      "max_ms": 18.305934,
+      "median_ms": 17.926798,
+      "p95_ms": 18.183272,
+      "response_bytes": 26752,
+      "runs": 30
+    },
+    "substring_metadata": {
+      "matching_papers": 1,
+      "max_ms": 13.208846999999999,
+      "median_ms": 12.690408,
+      "p95_ms": 13.02495,
+      "response_bytes": 309,
+      "runs": 30
+    },
+    "title": {
+      "matching_papers": 100000,
+      "max_ms": 3.298449,
+      "median_ms": 3.186498,
+      "p95_ms": 3.2594070000000004,
+      "response_bytes": 26111,
+      "runs": 30
+    },
+    "year": {
+      "matching_papers": 100000,
+      "max_ms": 3.476577,
+      "median_ms": 3.3457589999999997,
+      "p95_ms": 3.431731,
+      "response_bytes": 26683,
+      "runs": 30
+    }
+  },
+  "rows": 100000,
+  "storage": "temporary disk-backed SQLite WAL; warm OS cache"
+}

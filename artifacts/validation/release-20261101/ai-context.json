@@ -1,0 +1,34 @@
+{
+  "scope": "Actual RPC, gateway, retrieval, controlled geometry and local mock model; no paid request or model-quality evaluation",
+  "findings": [
+    {
+      "id": "page-summary-truncation",
+      "observed": {
+        "page_fragments": 60,
+        "provided_sources": 60,
+        "page_tail_in_prompt": true
+      },
+      "reproduced": false
+    },
+    {
+      "id": "unvalidated-citation",
+      "observed": {
+        "answer_contains_999": true,
+        "source_count": 60,
+        "warnings": [
+          "\u56de\u7b54\u542b\u65e0\u6cd5\u5bf9\u5e94\u5f53\u524d\u539f\u6587\u7247\u6bb5\u7684\u5f15\u7528\uff0c\u8bf7\u6838\u5bf9\u539f\u6587"
+        ]
+      },
+      "reproduced": false
+    },
+    {
+      "id": "document-retrieval-cap",
+      "observed": {
+        "relevant_block_exists": true,
+        "relevant_evidence_in_prompt": true,
+        "fallback_sources": 8
+      },
+      "reproduced": false
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "samples": [
+    {
+      "id": "arxiv-1706.03762",
+      "kind": "core",
+      "title": "Attention Is All You Need",
+      "path": "raw/attn.pdf",
+      "source": {
+        "type": "arxiv",
+        "url": "https://arxiv.org/abs/1706.03762",
+        "arxiv_id": "1706.03762",
+        "version": "arXiv /pdf/1706.03762 as archived by the Wayback Machine (capture 20240601000000); PDF creation date 2024-04-10, 15 pages",
+        "retrieved_via": "https://web.archive.org/web/20240601000000id_/https://arxiv.org/pdf/1706.03762",
+        "retrieved_at": "2026-10-31",
+        "license_note": "arXiv distribution; kept out of the repository, only hash and geometry recorded"
+      },
+      "selected_pages": [0, 1, 2, 3, 6, 10],
+      "annotate": true,
+      "notes": "Pages chosen after inspecting the PDF: title/abstract, two-column body, figure+caption, multi-head attention equations, Table 1, references. Not verified against the user's screenshot yet."
+    },
+    {
+      "id": "arxiv-2409.19256",
+      "kind": "core",
+      "title": "HybridFlow: A Flexible and Efficient RLHF Framework",
+      "path": "raw/hybridflow.pdf",
+      "source": {
+        "type": "arxiv",
+        "url": "https://arxiv.org/abs/2409.19256",
+        "arxiv_id": "2409.19256",
+        "version": "arXiv /pdf/2409.19256 as archived by the Wayback Machine (capture 20261021090043), 19 pages",
+        "retrieved_via": "https://web.archive.org/web/20261021090043id_/https://arxiv.org/pdf/2409.19256",
+        "retrieved_at": "2026-10-31",
+        "license_note": "arXiv distribution; kept out of the repository, only hash and geometry recorded"
+      },
+      "selected_pages": [0, 1, 2, 4, 7, 17],
+      "annotate": true,
+      "notes": "Pages chosen after inspecting the PDF: title/abstract, two-column body, architecture figure, equations, figure page, references."
+    }
+  ]
+}

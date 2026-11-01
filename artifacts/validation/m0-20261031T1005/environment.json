@@ -1,0 +1,30 @@
+{
+  "captured_at": "2026-10-31T10:56:15+00:00",
+  "moonlight_version": "0.1.0",
+  "platform": "Linux-6.8.0-101-generic-x86_64-with-glibc2.39",
+  "machine": "x86_64",
+  "cpu_model": "AMD Ryzen 7 6800H with Radeon Graphics",
+  "cpu_count": 16,
+  "memory_bytes": 32299491328,
+  "python": "3.11.15",
+  "python_executable": "/home/bynshard/themoonlight/.venv/bin/python",
+  "pymupdf": "2.0",
+  "node": "v18.19.1",
+  "engine": {
+    "babeldoc": "0.6.2",
+    "babeldoc_cli": "babeldoc 0.6.2",
+    "pymupdf": "2.0",
+    "python": "3.11.15",
+    "executable": "/home/bynshard/themoonlight/.venv/bin/babeldoc"
+  },
+  "model": {
+    "id": "qwen3.8-flash",
+    "provider": "openai-compatible",
+    "endpoint_host": "opencode.ai",
+    "temperature": "engine default (not overridden)",
+    "prompt": "babeldoc builtin prompt v0.6.2"
+  },
+  "credentials": "configured_via_gateway_env (value not recorded)",
+  "screen_scale": "not_applicable (off-screen rendering)",
+  "timezone": "UTC"
+}

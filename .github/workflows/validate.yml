@@ -1,0 +1,99 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: '-C target-feature=+crt-static'
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  windows:
+    name: Windows x64 portable
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.11'
+      - name: Prepare Windows toolchain
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set 1.99.1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup target add x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix app
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Rust tests on Windows
+        run: cargo test --manifest-path core/Cargo.toml --release --locked --target x86_64-pc-windows-msvc
+      - name: Frontend and protocol tests
+        run: npm --prefix app test
+      - name: Build native Windows core
+        run: cargo build --manifest-path core/Cargo.toml --release --locked --target x86_64-pc-windows-msvc
+      - name: Download verified Windows runtimes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/prepare_windows.py
+      - name: Native Windows library smoke
+        run: python scripts/smoke_windows.py
+      - name: Package Windows ZIP
+        env:
+          MOONLIGHT_PYTHON: python
+          MOONLIGHT_BUILD_SHA: ${{ github.sha }}
+        run: npm --prefix app run package:windows
+      - name: Verify ZIP contents and bundled executables
+        run: python scripts/verify_windows_package.py
+      - name: Test the packaged Windows application
+        run: node app/e2e/windows.mjs
+      - name: Upload Windows test package
+        id: upload
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: Moonlight-windows-x64-${{ github.run_number }}
+          path: |
+            release/Moonlight-*-windows-x64.zip
+            release/Moonlight-*-windows-x64.zip.sha256
+            release/manifest-windows.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Download instructions
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          @"
+          ## Windows x64 测试包
+          [下载本次构建的测试包]($env:ARTIFACT_URL)
+          下载后解压 artifact，再解压其中的 Moonlight ZIP，运行 Moonlight-win32-x64/moonlight.exe。
+          包含原生核心、PDF 阅读器、rclone 和官方 Codex 登录组件；无需安装 Node、Rust 或 Python 即可启动。
+          全文 PDF 翻译仍需另行配置 BabelDOC 和模型。当前为未签名测试版。
+          "@ >> $env:GITHUB_STEP_SUMMARY
+      - name: Upload checks and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: windows-checks-${{ github.run_number }}
+          path: artifacts/validation/windows/
+          if-no-files-found: warn
+          retention-days: 14

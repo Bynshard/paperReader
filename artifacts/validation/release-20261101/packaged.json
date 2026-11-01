@@ -1,0 +1,45 @@
+{
+  "scope": "Packaged Linux x64 Electron/ASAR/native core/rclone outside checkout; real PDF.js and SQLite; loopback model and translation engine fixtures; Playwright disables Chromium OS sandbox in this container",
+  "steps": [
+    {
+      "name": "packaged_start_without_checkout_runtime",
+      "status": "pass",
+      "ms": 783
+    },
+    {
+      "name": "import_edit_taxonomy_and_notes",
+      "status": "pass",
+      "ms": 589
+    },
+    {
+      "name": "ai_answer_to_notes_and_export_dialog",
+      "status": "pass",
+      "ms": 273
+    },
+    {
+      "name": "invalid_engine_output_task_failure_and_retry",
+      "status": "pass",
+      "ms": 1967
+    },
+    {
+      "name": "complete_backup_via_system_directory_dialog",
+      "status": "pass",
+      "ms": 294
+    },
+    {
+      "name": "verified_restore_to_new_library_and_restart",
+      "status": "fail",
+      "error": "TimeoutError: electronApplication.waitForEvent: Timeout 30000ms exceeded while waiting for event \"close\""
+    }
+  ],
+  "page_errors": [],
+  "runtime": {
+    "packaged": true,
+    "appPath": "/home/bynshard/themoonlight/release/Moonlight-linux-x64/resources/app.asar",
+    "cwd": "/tmp/moonlight-release-XZBiuU",
+    "resources": "/home/bynshard/themoonlight/release/Moonlight-linux-x64/resources"
+  },
+  "backup": "/tmp/moonlight-release-XZBiuU/backups/MoonlightBackup-622fab5c-a4a5-4abb-b157-07b3f532b19f",
+  "error": "electronApplication.waitForEvent: Timeout 30000ms exceeded while waiting for event \"close\"\n    at /home/bynshard/themoonlight/app/e2e/release.mjs:52:20\n    at async step (/home/bynshard/themoonlight/app/e2e/release.mjs:19:64)\n    at async file:///home/bynshard/themoonlight/app/e2e/release.mjs:49:2",
+  "visible_errors": []
+}

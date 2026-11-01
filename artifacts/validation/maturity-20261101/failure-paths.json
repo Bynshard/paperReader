@@ -1,0 +1,56 @@
+{
+  "scope": "Actual core; temporary libraries; database fault triggers and fake local translation engine; no paid model calls",
+  "findings": [
+    {
+      "id": "import-partial-commit",
+      "observed": {
+        "first_status": "failed",
+        "retry_status": "imported",
+        "papers": 1,
+        "blocks": 163
+      },
+      "reproduced": false
+    },
+    {
+      "id": "purge-file-before-row",
+      "observed": {
+        "purge_ok": false,
+        "paper_still_exists": true,
+        "referenced_pdf_exists": true
+      },
+      "reproduced": false
+    },
+    {
+      "id": "trash-during-translation",
+      "observed": {
+        "status": "cancelled",
+        "paper_deleted": true,
+        "translated_versions": 0
+      },
+      "reproduced": false
+    },
+    {
+      "id": "cancel-completed",
+      "observed": {
+        "before": "completed",
+        "after": "completed"
+      },
+      "reproduced": false
+    },
+    {
+      "id": "invalid-output",
+      "observed": {
+        "status": "failed",
+        "translated_pages": []
+      },
+      "reproduced": false
+    },
+    {
+      "id": "crash-restart",
+      "observed": {
+        "status_after_restart": "failed"
+      },
+      "reproduced": false
+    }
+  ]
+}

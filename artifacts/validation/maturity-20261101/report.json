@@ -1,0 +1,309 @@
+{
+  "date": "2026-11-01T06:32:57.770891+00:00",
+  "assessment": "工程原型 / 早期 Alpha，基础正常路径可运行，尚不满足可靠接管唯一论文库的发布标准",
+  "release_ready": false,
+  "scope": "本轮代码审查、真实 Electron + file:// + preload + Rust 正常流程、6 项故障复现和3 项 AI 上下文复现；没有修改产品逻辑来隐藏发现",
+  "desktop_audit": {
+    "completed": true,
+    "steps": 9,
+    "page_errors": [],
+    "ai_history_restored": false,
+    "conditions": [
+      "Linux 虚拟显示",
+      "Playwright 注入调试启动且禁用 OS sandbox、GPU；不代表生产 sandbox/GPU 验收",
+      "文件选择器、模型回复、翻译可执行文件为替身，真实模型质量不在此测试内"
+    ]
+  },
+  "findings": [
+    {
+      "id": "import-partial-commit",
+      "observed": {
+        "first_status": "failed",
+        "retry_status": "duplicate",
+        "papers": 1,
+        "blocks": 0
+      },
+      "reproduced": true,
+      "severity": "P1",
+      "title": "导入失败后留下半完成条目，重试被去重跳过",
+      "evidence": "core/src/library.rs:242",
+      "remediation": "把文件登记/正文索引作为可恢复提交；重试能补齐未完成索引",
+      "acceptance": "注入正文写入失败后重试，条目和附件不重复，全文可检索"
+    },
+    {
+      "id": "purge-file-before-row",
+      "observed": {
+        "purge_ok": false,
+        "paper_still_exists": true,
+        "referenced_pdf_exists": false
+      },
+      "reproduced": true,
+      "severity": "P0",
+      "title": "数据库删除失败后仍引用已被删除的受管 PDF",
+      "evidence": "core/src/library.rs:406",
+      "remediation": "先提交逻辑删除，再按引用做可重试文件回收；提供一致备份与恢复",
+      "acceptance": "在每个持久化步骤注入失败/崩溃，不能留下指向丢失文件的有效版本"
+    },
+    {
+      "id": "trash-during-translation",
+      "observed": {
+        "status": "completed",
+        "paper_deleted": true,
+        "translated_versions": 1
+      },
+      "reproduced": true,
+      "severity": "P0",
+      "title": "移入回收站后翻译仍完成并发布新版本",
+      "evidence": "core/src/library.rs:396",
+      "remediation": "删除联动取消，在发布事务中校验论文状态、jobId、源版本及取消标记",
+      "acceptance": "翻译时删除/永久删除，不再发布迟到产物；恢复不自动产生付费请求"
+    },
+    {
+      "id": "cancel-completed",
+      "observed": {
+        "before": "completed",
+        "after": "cancelling"
+      },
+      "reproduced": true,
+      "severity": "P1",
+      "title": "取消操作可把完成状态改回 cancelling",
+      "evidence": "core/src/library.rs:678",
+      "remediation": "集中定义任务状态机，终态不可被迟到操作改写",
+      "acceptance": "重复取消、完成与取消竞争、取消未知任务均有明确稳定结果"
+    },
+    {
+      "id": "invalid-output",
+      "observed": {
+        "status": "completed",
+        "translated_pages": [
+          0
+        ]
+      },
+      "reproduced": true,
+      "severity": "P0",
+      "title": "非 PDF 文件被登记为已完成译文，页数为 0",
+      "evidence": "core/src/library.rs:727",
+      "remediation": "发布前校验可解析性、页数/几何、目标范围和产物完整性",
+      "acceptance": "无效、空白、缺页或范围错误的输出必须失败，不进入可见译文版本"
+    },
+    {
+      "id": "crash-restart",
+      "observed": {
+        "status_after_restart": "translating"
+      },
+      "reproduced": true,
+      "severity": "P0",
+      "title": "核心崩溃后任务停留在 translating，没有恢复或中断标记",
+      "evidence": "core/src/library.rs:125",
+      "remediation": "启动协调非终态任务，持久化任务配置并提供任务中心、重试/恢复",
+      "acceptance": "翻译、导入、同步各阶段退出/崩溃后重新打开，状态与实际进程一致"
+    },
+    {
+      "id": "page-summary-truncation",
+      "observed": {
+        "page_fragments": 60,
+        "provided_sources": 20,
+        "page_tail_in_prompt": false
+      },
+      "reproduced": true,
+      "severity": "P1",
+      "title": "整页总结只得到前 20 个文本块",
+      "evidence": "core/src/ai.rs:80",
+      "remediation": "按完整页和 token 预算构造上下文；不足时明确展示覆盖范围",
+      "acceptance": "跨长页、多栏页核对实际上下文，不能把部分片段称作整页总结"
+    },
+    {
+      "id": "unvalidated-citation",
+      "observed": {
+        "answer_contains_999": true,
+        "source_count": 20
+      },
+      "reproduced": true,
+      "severity": "P1",
+      "title": "模型不存在的引用 [999] 原样进入回答",
+      "evidence": "core/src/ai.rs:159",
+      "remediation": "校验引用编号与提供证据的对应关系，标出无依据结论",
+      "acceptance": "不存在的引用必须拒绝/标注，正确引用能定位对应源版本和区域"
+    },
+    {
+      "id": "document-retrieval-cap",
+      "observed": {
+        "relevant_block_exists": true,
+        "relevant_evidence_in_prompt": false,
+        "fallback_sources": 6
+      },
+      "reproduced": true,
+      "severity": "P1",
+      "title": "只检查前 1200 个块，遗漏后部实际存在的相关内容",
+      "evidence": "core/src/ai.rs:87",
+      "remediation": "全文候选检索使用已有索引，按问题排序并报告依据范围",
+      "acceptance": "相关证据放在文档尾部时仍能命中；多轮问答可复查使用过的证据"
+    }
+  ],
+  "dimensions": [
+    {
+      "name": "安装与交付",
+      "status": "not_ready",
+      "have": [
+        "源码构建、Rust sidecar、生产前端"
+      ],
+      "gaps": [
+        "npm build 只构建前端，桌面仍查找仓库 core/target/release 与 .venv",
+        "没有打包/运行时收集、安装包、升级/回退和多平台发布链路",
+        "缺少 Rust 时静默退回功能不等价的 Python，界面未按后端能力降级"
+      ]
+    },
+    {
+      "name": "论文管理",
+      "status": "partial",
+      "have": [
+        "PDF 导入/查重、分页筛选/排序、星标、回收站、单条 BibTeX/RIS 导出"
+      ],
+      "gaps": [
+        "元数据编辑、手工分类/标签分配、阅读状态修改、独立笔记编辑未形成桌面入口",
+        "缺少批量选择/操作、重复项人工合并和元数据补全",
+        "分类为路径列表，缺少原生树管理；引用写作集成未实现"
+      ]
+    },
+    {
+      "name": "PDF 阅读与批注",
+      "status": "alpha",
+      "have": [
+        "真实 PDF.js、虚拟页、文字选择、高亮、版本切换、页级双栏同步"
+      ],
+      "gaps": [
+        "缺少文内完整搜索、目录/书签、PDF 链接交互和批注导出等常用阅读功能",
+        "跨页选区不保存，批注编辑能力不完整",
+        "同步基于页码/滚动比例，未实现源段落到译文段落锚点对齐"
+      ]
+    },
+    {
+      "name": "整篇翻译",
+      "status": "release_blocked",
+      "have": [
+        "BabelDOC 接入、页范围、进度/取消、译文版本"
+      ],
+      "gaps": [
+        "发布校验和任务状态故障已复现",
+        "全局任务中心、恢复/重试、全局并发与速率预算不足；每次 start_translation 可创建独立线程",
+        "此前真实样本正文覆盖 0.945 未达 0.95；对齐/字号门槛有失败，公式数值及语义人工复核未完成",
+        "术语表、用户修订、译文版本选择和目标语言等产品配置未闭环"
+      ]
+    },
+    {
+      "name": "AI 解读与登录",
+      "status": "prototype",
+      "have": [
+        "本地检索、问答/页摘要/选段翻译、可点击出处、保存 chats 表"
+      ],
+      "gaps": [
+        "本轮复现上下文截断、尾部检索缺失、无效引用未拦截",
+        "无模型配置 UI；依赖 MOONLIGHT 环境变量，Codex/ChatGPT 登录未接入产品",
+        "非流式、不能取消当前问答，AI 历史在桌面重开后不恢复",
+        "检索与证据存在不等于语义正确，尚缺自然论文问题集的检索/支持度验收"
+      ]
+    },
+    {
+      "name": "Zotero 迁移",
+      "status": "fixture_verified",
+      "have": [
+        "官方 schema 夹具、一致快照、复制附件、多 PDF/笔记/批注映射、幂等和缺失报告"
+      ],
+      "gaps": [
+        "没有真实用户旧库端到端验收",
+        "是单向迁移，关系/保存搜索/插件/Word 链接未接管",
+        "源批注修改/删除不更新，本地目录移动影响来源关联；部分信息只存档未原生管理"
+      ]
+    },
+    {
+      "name": "云同步",
+      "status": "protocol_verified",
+      "have": [
+        "rclone 七牛/OSS/WebDAV、增量提交、校验、三方合并、冲突选择、本地凭据保护"
+      ],
+      "gaps": [
+        "真实云厂商账号与跨设备长期场景未验收",
+        "新设备下载后未自动重建全文索引",
+        "没有历史压缩和远端垃圾回收，新设备需要重放历史；万篇首次云同步未压测",
+        "系统密钥库实机持久化未在各操作系统验证；不支持 Python 后端"
+      ]
+    },
+    {
+      "name": "性能",
+      "status": "mixed",
+      "have": [
+        "万篇生成 PDF 的完整导入、40 万块索引、SQL 分页/虚拟渲染、真实 Chromium 和本轮单篇 Electron 流程"
+      ],
+      "gaps": [
+        "高命中率正文搜索 P95 457.019ms > 200ms 门槛",
+        "PDF 仍整文件读入/跨 IPC/worker 复制，尚无范围读取",
+        "原始万篇资料是生成文本/矢量样本，不代表约 20GB 自然论文库的 IO/字体/扫描页分布",
+        "两路读取任务可同时被长搜索占满；全应用峰值内存、GPU 和长时间使用未验收"
+      ]
+    },
+    {
+      "name": "数据可靠性与可维护性",
+      "status": "release_blocked",
+      "have": [
+        "WAL/事务、文件哈希、临时路径、测试脚本、CI 配置"
+      ],
+      "gaps": [
+        "删除、发布、重试、重启的关键故障已复现",
+        "没有完整库备份/恢复、统一数据版本升级与回滚、损坏检测/修复闭环",
+        "主进程 readiness 依赖 pid 而非 ready 事件，退出直接 kill sidecar，缺少故障恢复/重启监督",
+        "关键故障探针尚未成为必须通过的回归门槛，CI 尚未在远端执行"
+      ]
+    }
+  ],
+  "roadmap": [
+    {
+      "order": 1,
+      "name": "内部 Alpha：先保证数据和任务正确",
+      "must": [
+        "清零本轮 4 个 P0 与任务/导入的 P1",
+        "任务中心、终态保护、崩溃恢复和安全发布",
+        "一致备份恢复与故障注入回归"
+      ],
+      "exit_criteria": "在导入/删除/翻译各持久化阶段中断后，元数据、附件和任务状态一致，无无效产物发布"
+    },
+    {
+      "order": 2,
+      "name": "受控 Beta：补齐日常使用闭环",
+      "must": [
+        "元数据/标签/分类/笔记编辑和批量管理",
+        "AI 配置与登录、流式/取消、历史恢复、全文检索与引用校验",
+        "翻译质量通过固定自然论文语料验收",
+        "安装包和单平台真实端到端测试"
+      ],
+      "exit_criteria": "新用户从安装、配置/登录、导入、整理、阅读/翻译、退出重开到迁移/同步，不需修改环境变量或数据库"
+    },
+    {
+      "order": 3,
+      "name": "稳定 1.0：真实库与长期使用",
+      "must": [
+        "自然万篇库和大 PDF IO/内存测试",
+        "高命中率检索、并发任务和完整 Electron 性能门槛",
+        "真实 Zotero/七牛/OSS/坚果云多设备长期冲突/离线/重试验收",
+        "多平台安装升级回退、长期稳定性和支持诊断"
+      ],
+      "exit_criteria": "按机器档位建立性能基线，在真实库、多设备和升级/崩溃场景中保留可复核通过证据"
+    }
+  ],
+  "performance_evidence": "../scale-10k/after.json",
+  "translation_quality_evidence": "docs/PROGRESS.md:24",
+  "deferred": [
+    "按用户要求暂不开展版权/许可证审查",
+    "没有真实云账号与用户原 Zotero 库，因此未冒充真实数据验收"
+  ],
+  "source_sha256": {
+    "core/src/library.rs": "4ebcb39b71a48b7b31d939f016c4c735ac0c5395a6a3c153e7194bc365ff9171",
+    "core/src/engine.rs": "fc242b697c746aaaf0d83c9b6c9332797998e2a776429fcd6d25be519c3cd510",
+    "core/src/ai.rs": "74c470e48444b981dea60f476fca00690b2025c401a5f3f43d094e94db00fec6",
+    "app/src/App.tsx": "3da13c86fea53ed3e77e0ad27b842fb73d805bef2562315c327c85a9d15c34c9",
+    "app/src/Reader.tsx": "9741cbbca2070596fdd12821ebce1309e2adde9bde36fd95cf667f4b8200b2e9",
+    "app/electron/main.cjs": "5b5a829785e8b9dc9b72a652d70fcf0e9fcdb66d607eab53c5684f0abd9fa095",
+    "scripts/audit_failure_paths.py": "ff7dc7ced046387da90f41e4c8d94ed5c1c52c52e0d02e862e27cf86561e9f48",
+    "scripts/audit_ai_context.py": "2acdcde725450cd0b14d7e64755c0fd4055fff7e499e8e318b2f09bd24ed4bc2",
+    "app/e2e/desktop-audit.mjs": "ac9e133c067a8f238134203a29b2053a731a21aaef899a958233e6b526da55fb"
+  }
+}

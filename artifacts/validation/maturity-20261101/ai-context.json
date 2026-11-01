@@ -1,0 +1,31 @@
+{
+  "scope": "Actual RPC, gateway, retrieval, controlled geometry and local mock model; no paid request or model-quality evaluation",
+  "findings": [
+    {
+      "id": "page-summary-truncation",
+      "observed": {
+        "page_fragments": 60,
+        "provided_sources": 60,
+        "page_tail_in_prompt": true
+      },
+      "reproduced": false
+    },
+    {
+      "id": "unvalidated-citation",
+      "observed": {
+        "answer_contains_999": true,
+        "source_count": 60
+      },
+      "reproduced": true
+    },
+    {
+      "id": "document-retrieval-cap",
+      "observed": {
+        "relevant_block_exists": true,
+        "relevant_evidence_in_prompt": true,
+        "fallback_sources": 8
+      },
+      "reproduced": false
+    }
+  ]
+}

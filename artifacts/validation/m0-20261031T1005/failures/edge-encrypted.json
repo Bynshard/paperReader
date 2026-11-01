@@ -1,0 +1,17 @@
+{
+  "id": "encrypted",
+  "input": {
+    "file": "encrypted.pdf",
+    "bytes": 1732,
+    "sha256": "902abca37b99cd32a1471f30e098f38a3a1ed690f45c93e90ac576a0a290696d",
+    "open": "needs_password",
+    "pages": null,
+    "encrypted": true,
+    "text_chars": null,
+    "geometry": [],
+    "error": "password protected; reader must ask for a password, translation is refused"
+  },
+  "status": "rejected",
+  "reason": "password protected; reader must ask for a password, translation is refused",
+  "checks": {}
+}

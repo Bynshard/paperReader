@@ -1,0 +1,55 @@
+{
+  "implemented": [
+    "official-browser-login",
+    "isolated-codex-home",
+    "streaming-paper-chat",
+    "summary",
+    "selected-text-translation",
+    "interrupt",
+    "bounded-local-history",
+    "model-selection",
+    "rate-limit-status"
+  ],
+  "verification": {
+    "rust": {
+      "passed": 15,
+      "ignored": 1
+    },
+    "react": {
+      "passed": 18
+    },
+    "node": {
+      "passed": 13
+    },
+    "production_build": "pass",
+    "desktop_mock_protocol": {
+      "scope": "real Electron/main/preload/Rust/PDF.js; simulated Codex OAuth completion and model; no real browser authentication",
+      "steps": [
+        "settings_browser_login_and_provider",
+        "summary_stream_evidence_and_sqlite_history",
+        "cancel_stream_does_not_save_partial_reply",
+        "restart_restores_ai_history_and_provider"
+      ],
+      "page_errors": [],
+      "completed": true
+    },
+    "live_fixed_text": {
+      "type": "real-official-app-server",
+      "credentials_read_by_app": false,
+      "browser_auth_completed_in_this_run": false,
+      "signed_in": true,
+      "models_returned": 8,
+      "model": "gpt-6.1-sol",
+      "answer": "注意力就是你所需要的一切。",
+      "completed": true,
+      "first_text_ms": 7148,
+      "total_ms": 7234
+    }
+  },
+  "not_verified": [
+    "new browser OAuth completed by a human",
+    "real paper context sent through the entire project service to Codex; automatic approval rejected the specific document transfer",
+    "whole-PDF translation on Codex",
+    "10k benchmark rerun after this change"
+  ]
+}

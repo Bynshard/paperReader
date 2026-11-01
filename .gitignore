@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.py[cod]
+app/node_modules/
+app/dist/
+core/target/
+work/
+tools/rclone/rclone
+tools/rclone/rclone.exe
+tools/rclone/*.tmp
+.env
+.env.local
+
+release/
+
+tools/windows/*.exe
+tools/windows/*.dll
+
+# Local credentials, caches and generated validation payloads
+.babeldoc-home/
+.env.*
+!.env.example
+artifacts/scratch/
+artifacts/**/outputs/
+artifacts/**/logs/
+artifacts/**/*.png
+*.log

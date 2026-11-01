@@ -1,0 +1,17 @@
+{
+  "id": "corrupt",
+  "input": {
+    "file": "corrupt.pdf",
+    "bytes": 37,
+    "sha256": "8cc28ba81e11bb769a0cf53b89c40711b628d033db1d230c01ca6ed859774d9a",
+    "open": "failed",
+    "pages": null,
+    "encrypted": false,
+    "text_chars": null,
+    "geometry": [],
+    "error": "truncated or malformed PDF (missing %PDF header or %%EOF trailer)"
+  },
+  "status": "rejected",
+  "reason": "truncated or malformed PDF (missing %PDF header or %%EOF trailer)",
+  "checks": {}
+}

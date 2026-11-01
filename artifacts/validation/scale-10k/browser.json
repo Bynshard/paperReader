@@ -1,0 +1,129 @@
+{
+  "scope": "Production React/PDF.js + actual Rust core over loopback HTTP, not Electron IPC or physical GPU/display",
+  "environment": {
+    "node": "v22.14.0",
+    "platform": "linux",
+    "browser": "156.0.8078.4"
+  },
+  "results": {
+    "library_first_visible": {
+      "runs": 5,
+      "median_ms": 33.404,
+      "p95_ms": 92.236,
+      "p99_ms": 92.236,
+      "max_ms": 92.236
+    },
+    "search_input_to_result": {
+      "runs": 10,
+      "median_ms": 285.496,
+      "p95_ms": 296.552,
+      "p99_ms": 296.552,
+      "max_ms": 296.552
+    },
+    "sort_to_visible": {
+      "runs": 10,
+      "median_ms": 6.847,
+      "p95_ms": 25.737,
+      "p99_ms": 25.737,
+      "max_ms": 25.737
+    },
+    "pdf_open_to_draw_complete": {
+      "runs": 8,
+      "median_ms": 241.39,
+      "p95_ms": 432.853,
+      "p99_ms": 432.853,
+      "max_ms": 432.853
+    },
+    "pdf_zoom_to_draw_complete": {
+      "runs": 1,
+      "median_ms": 87.722,
+      "p95_ms": 87.722,
+      "p99_ms": 87.722,
+      "max_ms": 87.722
+    }
+  },
+  "failures": [],
+  "fixture_count": 10000,
+  "dual_fixture": true,
+  "mounted_library_rows": 13,
+  "memory_before_pdf": {
+    "Documents": 1,
+    "Nodes": 816,
+    "JSHeapUsedSize": 4156200
+  },
+  "first_pdf_screenshot": "/home/bynshard/themoonlight/artifacts/validation/scale-10k/reader.png",
+  "scroll": {
+    "peakCanvases": 5,
+    "peakCanvasMiB": 12.482528686523438,
+    "frame_intervals": {
+      "runs": 240,
+      "median_ms": 16.7,
+      "p95_ms": 16.7,
+      "p99_ms": 16.8,
+      "max_ms": 16.8
+    }
+  },
+  "high_zoom": {
+    "scale": 3,
+    "dpr": 2,
+    "canvases": 3,
+    "max_page_pixels": 8383230,
+    "canvas_mib": 63.95896911621094,
+    "draw_ms": 2325.1410730000007
+  },
+  "stress": [
+    {
+      "name": "long_300_pages",
+      "pages": 300,
+      "first_page": {
+        "runs": 3,
+        "median_ms": 201.105,
+        "p95_ms": 202.835,
+        "p99_ms": 202.835,
+        "max_ms": 202.835
+      }
+    },
+    {
+      "name": "scanned_12_pages",
+      "pages": 12,
+      "first_page": {
+        "runs": 3,
+        "median_ms": 212.854,
+        "p95_ms": 214.566,
+        "p99_ms": 214.566,
+        "max_ms": 214.566
+      }
+    },
+    {
+      "name": "dense_vector_6_pages",
+      "pages": 6,
+      "first_page": {
+        "runs": 3,
+        "median_ms": 204.782,
+        "p95_ms": 237.353,
+        "p99_ms": 237.353,
+        "max_ms": 237.353
+      }
+    }
+  ],
+  "memory_after_pdf_cycles": {
+    "Documents": 1,
+    "Nodes": 247,
+    "JSHeapUsedSize": 6082284
+  },
+  "remaining_canvases": 0,
+  "long_tasks": {
+    "count": 15,
+    "total_ms": 860,
+    "max_ms": 68
+  },
+  "page_errors": [],
+  "budgets_ms_p95": {
+    "library_first_visible": 2000,
+    "search_input_to_result": 700,
+    "sort_to_visible": 200,
+    "pdf_open_to_draw_complete": 3000,
+    "pdf_zoom_to_draw_complete": 1500
+  },
+  "completed": true
+}

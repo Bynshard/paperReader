@@ -1,0 +1,41 @@
+{
+  "tests": 7,
+  "source": "official Zotero userdata.sql, schema 130; synthetic records and PDFs",
+  "results": {
+    "copy_report": {
+      "annotations": 2,
+      "archive": "/tmp/moonlight-zotero-test-f8sndz06/library/imports/zotero/2a928bdb8054f151b822682eced99c9eb7327f36782d0ea76bff927f0f3ca3d3",
+      "attachments": 5,
+      "collections": 2,
+      "data_dir": "/tmp/moonlight-zotero-test-f8sndz06/Zotero",
+      "duplicates": 1,
+      "duration_ms": 36,
+      "errors": [],
+      "imported": 4,
+      "items": 5,
+      "missing_attachments": [
+        {
+          "attachment": "ATTACH03",
+          "item": "PAPER001",
+          "path": "storage:missing.pdf",
+          "reason": "not_available_locally"
+        }
+      ],
+      "source": "sqlite",
+      "updated": 0,
+      "warnings": [
+        {
+          "annotation": "ANNOT003",
+          "reason": "annotation_type_archived_only",
+          "type": "4"
+        }
+      ],
+      "without_pdf": 3
+    },
+    "metadata_1000": {
+      "duration_seconds": 0.8189072646200657,
+      "items": 1005,
+      "errors": []
+    }
+  }
+}

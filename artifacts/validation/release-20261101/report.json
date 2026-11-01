@@ -1,0 +1,148 @@
+{
+  "stage": "Linux x64 preview; stable release blocked by remaining gates",
+  "date": "2026-11-01 Asia/Shanghai",
+  "project_checks": {
+    "steps": [
+      {
+        "name": "rust_tests",
+        "exit_code": 0,
+        "seconds": 1.038
+      },
+      {
+        "name": "rust_build",
+        "exit_code": 0,
+        "seconds": 0.104
+      },
+      {
+        "name": "frontend_tests",
+        "exit_code": 0,
+        "seconds": 1.861
+      },
+      {
+        "name": "production_build",
+        "exit_code": 0,
+        "seconds": 1.936
+      },
+      {
+        "name": "real_pdf_smoke",
+        "exit_code": 0,
+        "seconds": 1.343
+      },
+      {
+        "name": "responsiveness",
+        "exit_code": 0,
+        "seconds": 4.308
+      },
+      {
+        "name": "zotero_migration",
+        "exit_code": 0,
+        "seconds": 18.183
+      },
+      {
+        "name": "reliability",
+        "exit_code": 0,
+        "seconds": 6.707
+      },
+      {
+        "name": "fault_paths",
+        "exit_code": 0,
+        "seconds": 6.173
+      },
+      {
+        "name": "ai_evidence",
+        "exit_code": 0,
+        "seconds": 1.883
+      },
+      {
+        "name": "cloud_transports",
+        "exit_code": 0,
+        "seconds": 22.022
+      }
+    ],
+    "completed": true
+  },
+  "packaged_workflows": {
+    "scope": "Packaged Linux x64 Electron/ASAR/native core/rclone outside checkout; real PDF.js and SQLite; loopback model and translation engine fixtures; Playwright disables Chromium OS sandbox in this container",
+    "steps": [
+      {
+        "name": "packaged_start_without_checkout_runtime",
+        "status": "pass",
+        "ms": 776
+      },
+      {
+        "name": "import_edit_taxonomy_and_notes",
+        "status": "pass",
+        "ms": 581
+      },
+      {
+        "name": "ai_answer_to_notes_and_export_dialog",
+        "status": "pass",
+        "ms": 273
+      },
+      {
+        "name": "invalid_engine_output_task_failure_and_retry",
+        "status": "pass",
+        "ms": 1750
+      },
+      {
+        "name": "upgrade_legacy_database_and_keep_user_data",
+        "status": "pass",
+        "ms": 834
+      },
+      {
+        "name": "complete_backup_via_system_directory_dialog",
+        "status": "pass",
+        "ms": 194
+      },
+      {
+        "name": "verified_restore_to_new_library_and_restart",
+        "status": "pass",
+        "ms": 2777
+      }
+    ],
+    "page_errors": [],
+    "runtime": {
+      "packaged": true,
+      "appPath": "/tmp/moonlight-release-tptyQw/installed/Moonlight-linux-x64/resources/app.asar",
+      "cwd": "/tmp/moonlight-release-tptyQw",
+      "resources": "/tmp/moonlight-release-tptyQw/installed/Moonlight-linux-x64/resources"
+    },
+    "backup": "/tmp/moonlight-release-tptyQw/backups/MoonlightBackup-1dff6d97-fd2f-45ed-b245-45091f17c12c",
+    "restored_new_library": true,
+    "completed": true
+  },
+  "package": {
+    "version": "0.1.0",
+    "electron": "42.11.18",
+    "platform": "linux",
+    "arch": "x64",
+    "directory": "/home/bynshard/themoonlight/release/Moonlight-linux-x64",
+    "archive": "/home/bynshard/themoonlight/release/Moonlight-0.1.0-linux-x64.tar.gz",
+    "sha256": "72b94efd6f754463684f11c8473eab852be947d242e5191bae745f3b03c5a8e5",
+    "core": "moonlight-core 0.1.0"
+  },
+  "package_integrity": {
+    "no_source_or_credentials": true,
+    "ui_matches_build": true,
+    "native_matches_build": true,
+    "rclone_matches": true
+  },
+  "npm_advisories": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "scale_failures": [
+    "search_body_common: p95 463.314 > 200 ms"
+  ],
+  "known_limits": [
+    "high-hit full text search above 200 ms P95",
+    "only Linux x64 archive built; no OS installer/signature/update service",
+    "desktop CI uses virtual display and OS sandbox disabled by test harness",
+    "real browser account login, model quality and real vendor credentials not validated in this turn",
+    "whole PDF engine and Codex CLI are optional externally installed dependencies"
+  ]
+}

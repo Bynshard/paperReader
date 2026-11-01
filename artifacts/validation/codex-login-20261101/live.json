@@ -1,0 +1,12 @@
+{
+  "type": "real-official-app-server",
+  "credentials_read_by_app": false,
+  "browser_auth_completed_in_this_run": false,
+  "signed_in": true,
+  "models_returned": 8,
+  "model": "gpt-6.1-sol",
+  "answer": "注意力就是你所需要的一切。",
+  "completed": true,
+  "first_text_ms": 7148,
+  "total_ms": 7234
+}

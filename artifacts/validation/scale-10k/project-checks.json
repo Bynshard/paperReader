@@ -1,0 +1,45 @@
+{
+  "steps": [
+    {
+      "name": "rust_tests",
+      "exit_code": 0,
+      "seconds": 1.028
+    },
+    {
+      "name": "rust_build",
+      "exit_code": 0,
+      "seconds": 0.11
+    },
+    {
+      "name": "frontend_tests",
+      "exit_code": 0,
+      "seconds": 1.589
+    },
+    {
+      "name": "production_build",
+      "exit_code": 0,
+      "seconds": 1.757
+    },
+    {
+      "name": "real_pdf_smoke",
+      "exit_code": 0,
+      "seconds": 1.322
+    },
+    {
+      "name": "responsiveness",
+      "exit_code": 0,
+      "seconds": 4.069
+    },
+    {
+      "name": "zotero_migration",
+      "exit_code": 0,
+      "seconds": 17.58
+    },
+    {
+      "name": "cloud_transports",
+      "exit_code": 0,
+      "seconds": 22.248
+    }
+  ],
+  "completed": true
+}

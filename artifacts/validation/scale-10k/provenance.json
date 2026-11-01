@@ -1,0 +1,25 @@
+{
+  "utc": "2026-11-01T06:14:30.709621+00:00",
+  "cpu": "AMD Ryzen 7 6800H with Radeon Graphics",
+  "logical_cpus": 16,
+  "os": "Linux-6.8.0-101-generic-x86_64-with-glibc2.39",
+  "work_dir": "/tmp/moonlight-scale-10k",
+  "source_sha256": {
+    "core/target/release/moonlight-core": "6f56d4f67c1fa7921c5cf5405a96d6bcbee30dbab8ec16fffa093fc8c1519272",
+    "app/package-lock.json": "24747c2f24c59c5e389cd031f049b9476e6c4f14ec319b2918b08e920646e566",
+    "core/src/main.rs": "a750279acda3f848fa2e4da7565bc31eb62dbe08d4126e7c23b8d4ee7b387aae",
+    "core/src/library.rs": "4ebcb39b71a48b7b31d939f016c4c735ac0c5395a6a3c153e7194bc365ff9171",
+    "core/src/search.rs": "01837e295898ee893cd867ed8d2e1107b20475937f0b75b58ac0237f9d2bc17c",
+    "core/src/pdfmeta.rs": "5b611784568fdf236487806b19396b369a375636c0d6289b79773d609c69da66",
+    "moonlight/block_fts.sql": "207d0ac0cb50d1e004ff67922ddd3c6492f0a7a8d55821fe832e3efb5447bee1",
+    "scripts/benchmark_library.py": "5fc26d3f0571ba3adfbabb282f0119c5e09787f2f2620fb3b85085787e8ea39b",
+    "scripts/serve_benchmark.py": "86196d84758dcc6aac1dd0f4561938198583c94af630eaf560a893943c587b11",
+    "app/e2e/benchmark.mjs": "4ece61ff030dcf45de8ac440cc61a2417914efb5d09ef424d04236560df36f27",
+    "app/src/PdfPane.tsx": "cb2f7221a2779ef106b2f2aa8fc85f2fce6d756824304665726f5bbecefca077",
+    ".github/workflows/validate.yml": "66a1f3cb8a7fd1225200e1bafafdb3a30b2df56cce3573e69f90b92b80b28600"
+  },
+  "real_pdf_sha256": {
+    "corpus/raw/attn.pdf": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+    "corpus/raw/hybridflow.pdf": "4807a008bdea448c7a6aecc3b0aa65ffc45f1f4ca83c056bfe562b5e2397ce98"
+  }
+}

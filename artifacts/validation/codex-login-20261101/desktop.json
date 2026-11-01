@@ -1,0 +1,11 @@
+{
+  "scope": "real Electron/main/preload/Rust/PDF.js; simulated Codex OAuth completion and model; no real browser authentication",
+  "steps": [
+    "settings_browser_login_and_provider",
+    "summary_stream_evidence_and_sqlite_history",
+    "cancel_stream_does_not_save_partial_reply",
+    "restart_restores_ai_history_and_provider"
+  ],
+  "page_errors": [],
+  "completed": true
+}

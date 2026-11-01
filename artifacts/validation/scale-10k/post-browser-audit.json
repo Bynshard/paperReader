@@ -1,0 +1,9 @@
+{
+  "integrity_check": "ok",
+  "foreign_key_errors": [],
+  "papers": 10000,
+  "versions": 10000,
+  "legacy_fts_orphans": 0,
+  "remaining_stress_fixtures": 0,
+  "remaining_dual_test_versions": 0
+}

@@ -1,0 +1,22 @@
+{
+  "status": "configured_not_run",
+  "workflow": ".github/workflows/validate.yml",
+  "runner": "windows-2025",
+  "triggers": [
+    "push",
+    "pull_request",
+    "workflow_dispatch"
+  ],
+  "local_build_performed_after_user_requested_ci_only": false,
+  "checks": [
+    "workflow YAML parsed",
+    "Python AST parsed",
+    "JavaScript syntax checked"
+  ],
+  "remote_run": null,
+  "repository": "user will connect later",
+  "artifacts": [
+    "Moonlight-windows-x64-RUN_NUMBER",
+    "windows-checks-RUN_NUMBER"
+  ]
+}

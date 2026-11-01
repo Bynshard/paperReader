@@ -1,0 +1,68 @@
+{
+  "scope": "Real Electron/main/preload/Rust/file:// PDF.js; isolated library; OS file chooser, AI model and translation executable mocked; no model-quality claim",
+  "steps": [
+    {
+      "name": "actual_desktop_startup",
+      "status": "pass",
+      "ms": 363.19,
+      "result": {
+        "url_scheme": "file",
+        "version": "0.1.0",
+        "user_data_isolated": true
+      }
+    },
+    {
+      "name": "import_via_ui_and_native_ipc",
+      "status": "pass",
+      "ms": 823.28,
+      "result": {
+        "papers": 1
+      }
+    },
+    {
+      "name": "favorite_via_ui",
+      "status": "pass",
+      "ms": 40
+    },
+    {
+      "name": "pdf_render_through_file_protocol_and_ipc",
+      "status": "pass",
+      "ms": 269.47,
+      "result": {
+        "canvases": 3
+      }
+    },
+    {
+      "name": "selection_highlight_persistence",
+      "status": "pass",
+      "ms": 60.83
+    },
+    {
+      "name": "ai_rpc_and_source_navigation_mock_model",
+      "status": "pass",
+      "ms": 146.1
+    },
+    {
+      "name": "translation_job_and_dual_pdf_mock_engine",
+      "status": "pass",
+      "ms": 958.27
+    },
+    {
+      "name": "restart_real_desktop_retains_library_and_annotations",
+      "status": "pass",
+      "ms": 772.41,
+      "result": {
+        "versions": 2,
+        "annotations": 1
+      }
+    },
+    {
+      "name": "trash_restore_via_ui",
+      "status": "pass",
+      "ms": 223.21
+    }
+  ],
+  "page_errors": [],
+  "ai_history_restored": true,
+  "completed": true
+}

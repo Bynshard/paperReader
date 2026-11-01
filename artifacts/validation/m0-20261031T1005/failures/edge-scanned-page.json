@@ -1,0 +1,42 @@
+{
+  "id": "scanned-page",
+  "input": {
+    "file": "scanned-page.pdf",
+    "bytes": 11223576,
+    "sha256": "1629dd132e73f80c2145a4af1c1e8a12dbd579515041cd4111cad48b410de616",
+    "open": "ok",
+    "pages": 1,
+    "encrypted": false,
+    "text_chars": 0,
+    "geometry": [
+      {
+        "index": 0,
+        "width": 612.0,
+        "height": 792.0,
+        "rotation": 0,
+        "cropbox": [
+          0.0,
+          0.0,
+          612.0,
+          792.0
+        ],
+        "mediabox": [
+          0.0,
+          0.0,
+          612.0,
+          792.0
+        ]
+      }
+    ],
+    "error": null
+  },
+  "status": "failed",
+  "reason": "RuntimeError: gateway failed: missing env MOONLIGHT_UPSTREAM_KEY",
+  "checks": {
+    "text_layer": {
+      "chars": 0,
+      "scanned": true
+    }
+  },
+  "elapsed_s": 0.1
+}
