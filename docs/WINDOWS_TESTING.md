@@ -1,10 +1,10 @@
 # Windows 测试包与 GitHub CI
 
-CI 只构建 Windows x64，触发方式为每次 push、pull request，以及 Actions 中手动运行。编译、测试和打包均在 GitHub 的 Windows Server 2025 执行，本地无需运行构建。当前只配置了文件，尚未关联仓库或执行远端流水线。
+CI 只构建 Windows x64，触发方式为每次 push、pull request，以及 Actions 中手动运行。编译、测试和打包均在 GitHub 的 Windows Server 2025 执行，本地无需运行构建。首次远端 Windows 流水线已通过，包含打包后桌面测试。
 
 ## 下载和使用
 
-1. 把本项目推送到你准备的 GitHub 仓库。
+1. 优先从 [GitHub Releases](https://github.com/Bynshard/paperReader/releases) 下载 Windows ZIP；普通提交的测试包可按以下步骤从 Actions 下载。
 2. 打开仓库的 **Actions → Windows build**，选择绿色通过的运行。
 3. 在 **Artifacts** 下载 `Moonlight-windows-x64-运行编号`；运行摘要也提供本次下载链接。产物保留 14 天。
 4. 解压下载的 artifact，再解压其中的 `Moonlight-0.1.0-windows-x64.zip`。
@@ -27,7 +27,7 @@ ZIP 同时提供 SHA-256 文件与构建清单。每次包的文件名包含项�
 
 ## CI 的检查与产物门槛
 
-工作流为 `.github/workflows/validate.yml`，仅有一个 Windows job：
+工作流为 `.github/workflows/validate.yml`，构建和发布 job 均只使用 Windows：
 
 1. 安装 Node 22、Python 3.11、Rust 1.99.1；使用锁文件安装依赖。
 2. 在真实 Windows/MSVC 上运行 Rust 单元测试、React 测试和 Node 协议测试。
@@ -46,4 +46,8 @@ Windows 测试中已避开 shell glob 和 `.cjs` shebang，原生 helper 与同�
 
 - CI 构建失败：查看第一个红色步骤，下载 `windows-checks`（若已生成），保留失败日志。
 - 软件启动或操作失败：记录对应 artifact 的运行编号、Windows 版本、触发步骤和错误提示。资料管理失败与“尚未配置全文翻译引擎”应分别记录。
-- 本轮只配置工作流；GitHub 仓库接入和首次远端构建由你稍后进行，没有声称已产出可下载的 Windows 包。
+- 首次成功运行：[Windows build #1](https://github.com/Bynshard/paperReader/actions/runs/41289973781)。
+
+## 发布新版本
+
+先将 `app/package.json`、锁文件及核心版本更新为一致的版本号，提交后推送对应的 `v版本号` 标签。标签触发完整 Windows 构建和测试，全部通过后自动创建预发布 Release，上传 ZIP、SHA-256 和构建清单；标签必须与包版本一致。普通分支提交仅上传 Actions artifact。
