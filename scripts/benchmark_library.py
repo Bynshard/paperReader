@@ -248,6 +248,7 @@ def run(args):
         scenarios = {
             'recent_first':dict(), 'recent_deep':dict(offset=args.count-100),
             'sort_title':dict(sort='title'), 'sort_year':dict(sort='year'),
+            'sort_citations':dict(sort='citations'),
             'favorite':dict(favorite=True), 'read_status':dict(status='read'),
             'category':dict(category=category),'tag':dict(tag='topic000'),
             'search_title_rare':dict(query='Paper 01234'),

@@ -46,7 +46,7 @@ describe('library asynchronous requests',()=>{
     mocks.paperPage.mockImplementation((opts)=>opts.query==='older' ? old.promise : Promise.resolve({items:[paper(opts.query || 'initial')],total:1,offset:0,limit:100}));
     mount();
     await screen.findByText('Paper initial');
-    const input=screen.getByPlaceholderText('搜索标题、作者、DOI 或正文…');
+    const input=screen.getByRole('textbox', { name: '论文搜索' });
     fireEvent.change(input,{target:{value:'older'}});
     await waitFor(()=>expect(mocks.paperPage).toHaveBeenCalledWith(expect.objectContaining({query:'older'})));
     fireEvent.change(input,{target:{value:'newer'}});

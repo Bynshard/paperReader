@@ -41,10 +41,10 @@ def main():
     finally:
         server.shutdown();server.server_close();thread.join(timeout=2)
     report=args.report
-    if args.enforce:assert not any(f['reproduced'] for f in findings),findings
     report.parent.mkdir(parents=True,exist_ok=True)
     report.write_text(json.dumps(dict(scope='Actual RPC, gateway, retrieval, controlled geometry and local mock model; no paid request or model-quality evaluation',findings=findings),indent=2)+'\n')
     print(json.dumps(findings,indent=2))
+    if args.enforce:assert not any(f['reproduced'] for f in findings),findings
 
 
 if __name__=='__main__':main()

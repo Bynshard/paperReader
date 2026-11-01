@@ -5,18 +5,21 @@
  *  - renderer has no Node integration, is sandboxed and context-isolated;
  *  - the preload exposes a tiny, explicit API (no generic fs/child_process);
  *  - every file path is resolved by the Python sidecar from a paper/version id;
- *  - the model credential lives in the sidecar's environment, never in the
- *    renderer, the URL or a command line;
+ *  - saved model credentials stay in encrypted app settings and the sidecar
+ *    environment; the renderer receives only a configured flag;
  *  - external navigation and new windows are denied.
  */
-const { app, BrowserWindow, ipcMain, dialog, shell, session, safeStorage } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, session, safeStorage, protocol, net } = require("electron");
 const { createAiService } = require('./ai-service.cjs');
+const { createTranslationSettings } = require('./translation-settings.cjs');
 const { createSyncSettings } = require('./sync-settings.cjs');
 const { importBatches } = require('./import-batches.cjs');
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const readline = require("node:readline");
+const {pathToFileURL} = require('node:url');
+protocol.registerSchemesAsPrivileged([{scheme:'moonlight-ocr',privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true}}]);
 
 if(process.env.MOONLIGHT_USER_DATA){const profile=path.resolve(process.env.MOONLIGHT_USER_DATA);fs.mkdirSync(profile,{recursive:true});app.setPath('userData',profile);}
 
@@ -24,6 +27,7 @@ let win = null;
 let sidecar = null;
 let seq = 0;
 let syncSettings;
+let translationSettings;
 let aiService;
 let libraryOverride=null;
 const pending = new Map();
@@ -147,6 +151,13 @@ if(!ownsInstance)app.quit();
 app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.focus();}});
 app.whenReady().then(async () => {
   if(!ownsInstance)return;
+  protocol.handle('moonlight-ocr',async request=>{
+    const url=new URL(request.url),name=url.pathname.slice(1);
+    if(request.method!=='GET'||url.hostname!=='assets'||!(/^(?:worker\.min\.js|tesseract-core[a-z-]*\.wasm(?:\.js)?|(?:eng|chi_sim)\.traineddata\.gz)$/.test(name)))return new Response('Not found',{status:404});
+    const root=app.isPackaged?path.join(app.getAppPath(),'dist/ocr'):path.join(projectRoot(),'app/public/ocr');
+    const response=await net.fetch(pathToFileURL(path.join(root,name)).href);
+    return new Response(response.body,{status:response.status,headers:{'Access-Control-Allow-Origin':'*','Content-Type':name.endsWith('.js')?'text/javascript':name.endsWith('.wasm')?'application/wasm':'application/octet-stream'}});
+  });
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
   app.on("web-contents-created", (_e, contents) => {
     contents.setWindowOpenHandler(({ url }) => {
@@ -160,6 +171,9 @@ app.whenReady().then(async () => {
   try {
     const location=path.join(app.getPath('userData'),'library-location.json');
     if(fs.existsSync(location)){const saved=JSON.parse(fs.readFileSync(location,'utf8'));if(typeof saved.path!=='string'||!fs.existsSync(path.join(saved.path,'library.db')))throw new Error('已选择的论文库不可用，请恢复目录后重试');libraryOverride=saved.path;}
+    translationSettings=createTranslationSettings({file:path.join(app.getPath('userData'),'translation-credentials.json'),safeStorage});
+    await translationSettings.load();
+    Object.assign(process.env,translationSettings.environment());
     await startSidecar();
   } catch (err) {
     dialog.showErrorBox("Moonlight 启动失败", String(err && err.message ? err.message : err));
@@ -168,6 +182,21 @@ app.whenReady().then(async () => {
   ipcMain.handle("api:call", async (_e, { method, params, timeoutMs }) => callSidecar(method, params, timeoutMs));
   syncSettings=createSyncSettings({file:path.join(app.getPath('userData'),'sync-credentials.json'),safeStorage,call:callSidecar});
   await syncSettings.load();
+  ipcMain.handle('translation:action',async(_e,{action,input})=>{
+    if(action==='status')return translationSettings.summary();
+    if(action==='save')return translationSettings.save(input);
+    if(action==='pickBabeldoc'){
+      const choice=await dialog.showOpenDialog(win,{title:'选择 BabelDOC 可执行文件',properties:['openFile'],...(process.platform==='win32'?{filters:[{name:'BabelDOC',extensions:['exe']}]}:{})});
+      return choice.canceled?null:choice.filePaths[0];
+    }
+    if(action==='restart'){
+      const jobs=await callSidecar('list_jobs');
+      const sync=await callSidecar('sync_status');
+      if(jobs.some(j=>!['completed','failed','cancelled'].includes(j.status))||sync.running||aiService?.isBusy()||pending.size)throw new Error('请等待导入、翻译、问答和同步任务结束后再重启');
+      setTimeout(()=>{app.relaunch();app.quit();},500);return {restarting:true};
+    }
+    throw new Error('未知翻译配置操作');
+  });
   ipcMain.handle('sync:settings',()=>syncSettings.summary());
   ipcMain.handle('sync:configure',(_e,input)=>syncSettings.save(input));
   ipcMain.handle("dialog:pick-pdfs", async () => {
@@ -212,7 +241,7 @@ app.whenReady().then(async () => {
   }});
   await aiService.load();
   ipcMain.handle('ai:action',(_e,{action,input})=>{
-    if(!['preferences','status','configure','login','cancelLogin','logout','run','cancel'].includes(action))throw new Error('Unknown AI action');
+    if(!['preferences','preview','status','configure','login','cancelLogin','logout','run','cancel'].includes(action))throw new Error('Unknown AI action');
     return aiService[action](input);
   });
   ipcMain.handle('library:backup',async(_e,action)=>{

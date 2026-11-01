@@ -113,6 +113,28 @@ class SyncTests(unittest.TestCase):
             text=path.read_text();self.assertNotIn('test-password',text);self.assertNotIn('sync_base',text)
         self.assertFalse(any(p.name=='library.db' for p in self.server.root.rglob('*')))
         REPORT['webdav']={'commits':len(commits),'unchanged_sync':status['report']}
+    def test_nested_folders_and_short_notes_survive_roundtrip_and_tree_reversal(self):
+        self.seed()
+        parent=self.a.call('save_category',name='Research root')['id']
+        child=self.a.call('save_category',name='Reinforcement learning',parent_id=parent)['id']
+        self.a.call('bulk_assign',paper_ids=[self.id],category_id=child,tags=['quick-read'])
+        self.a.call('set_short_note',paper_id=self.id,text='Synced one sentence contribution')
+        self.a.sync();self.b.sync()
+        self.assertEqual(self.get(self.b)['short_note'],'Synced one sentence contribution')
+        self.assertEqual(self.b.call('list_papers_page',category=parent)['total'],1)
+        self.assertTrue(any(t['name']=='quick-read' for t in self.get(self.b)['tags']))
+        folders={c['id']:c for c in self.b.call('list_taxonomy')['categories']}
+        self.assertEqual(folders[child]['parent_id'],parent)
+        # Both moves must be applied as one transaction: the final tree is valid,
+        # but applying the new parent before the child would temporarily cycle.
+        self.a.call('save_category',id=child,name='Reinforcement learning',parent_id=None)
+        self.a.call('save_category',id=parent,name='Research root',parent_id=child)
+        self.a.sync();self.b.sync()
+        folders={c['id']:c for c in self.b.call('list_taxonomy')['categories']}
+        self.assertIsNone(folders[child]['parent_id'])
+        self.assertEqual(folders[parent]['parent_id'],child)
+        self.assertEqual(self.b.call('sync_status')['conflicts'],0)
+
     def test_note_conflict_is_retained_and_resolvable(self):
         self.seed()
         self.a.call('update_paper',paper_id=self.id,fields={'notes':'A conflicting note'})

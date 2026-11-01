@@ -193,6 +193,18 @@ fn pull_commit(lib:&Library,p:&Profile,remote:&Remote,folder:&Path,id:&str,commi
     phase(lib,"合并论文和笔记");let target=p.target_id();
     // Taxonomy precedes papers, preserving foreign-key membership references.
     let mut changes=commit.changes.iter().collect::<Vec<_>>();changes.sort_by_key(|c|(c.key.starts_with("paper:"),c.key.clone()));
+    // Apply all directory moves atomically: two valid coordinated moves may
+    // temporarily form a cycle if their rows are split across batches.
+    {
+        let conn=lib.conn();let tx=conn.unchecked_transaction()?;
+        for change in changes.iter().filter(|c|c.key.starts_with("category:")) {
+            let local=model::load(&tx,&change.key)?;let(merged,paths)=model::merge(&change.base,&local,&change.value,false);
+            if merged!=local{model::apply(&tx,&change.key,&merged)?;}
+            if !paths.is_empty(){save_conflict(&tx,&target,id,&change.key,&change.base,&change.value,&paths)?;}
+        }
+        crate::organization::validate_tree(&tx)?;tx.commit()?;
+    }
+    changes.retain(|c|!c.key.starts_with("category:"));
     for group in changes.chunks(50) {
         check_cancel(lib)?;let conn=lib.conn();let tx=conn.unchecked_transaction()?;
         for change in group {
@@ -324,7 +336,7 @@ pub fn resolve(lib:&Library,id:&str,choice:&str)->Result<Value> {
             let blob=work(lib,&profile)?.join("objects").join(hash);
             if sha256_file(&blob)?!=hash{return Err(anyhow!("冲突文件校验失败"));}
             materialize(lib.root(),path,&blob)?;
-        }else{let conn=lib.conn();let tx=conn.unchecked_transaction()?;let current=model::load(&tx,&key)?;let(value,_)=model::merge(&base,&current,&incoming,true);model::apply(&tx,&key,&value)?;tx.commit()?;}
+        }else{let conn=lib.conn();let tx=conn.unchecked_transaction()?;let current=model::load(&tx,&key)?;let(value,_)=model::merge(&base,&current,&incoming,true);model::apply(&tx,&key,&value)?;crate::organization::validate_tree(&tx)?;tx.commit()?;}
     }
     let conn=lib.conn();let tx=conn.unchecked_transaction()?;
     tx.execute("DELETE FROM sync_conflicts WHERE id=? AND target=?",params![id,target])?;

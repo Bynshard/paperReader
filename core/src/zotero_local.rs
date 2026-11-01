@@ -78,7 +78,7 @@ fn find_dir(explicit: Option<&str>) -> Option<PathBuf> {
     dirs.into_iter().find(|p|p.join("zotero.sqlite").is_file())
 }
 #[derive(Clone)]
-struct Collection { id:i64, key:String, path:String, library:i64, count:i64 }
+struct Collection { id:i64, key:String, name:String, parent:Option<i64>, path:String, library:i64, count:i64 }
 fn collections(conn:&Connection)->Result<Vec<Collection>> {
     let mut stmt=conn.prepare("SELECT c.collectionID,c.key,c.collectionName,c.parentCollectionID,c.libraryID,COUNT(ci.itemID) FROM collections c LEFT JOIN collectionItems ci ON ci.collectionID=c.collectionID GROUP BY c.collectionID")?;
     let rows=stmt.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -90,13 +90,13 @@ fn collections(conn:&Connection)->Result<Vec<Collection>> {
     }
     let mut out=vec![];
     for (id,key,name,parent,library,count) in rows {
-        let mut parts=vec![name]; let mut current=parent; let mut seen=vec![id];
+        let mut parts=vec![name.clone()]; let mut current=parent; let mut seen=vec![id];
         while let Some(p)=current {
             if seen.contains(&p) {return Err(anyhow!("Zotero collection cycle at {id}"));} seen.push(p);
             if let Some((name,parent))=names.get(&p) {parts.insert(0,name.clone());current=*parent;} else {break;}
         }
         if library!=1 {parts.insert(0,format!("{} [{}]",groups.get(&library).map(String::as_str).unwrap_or("Library"),library));}
-        out.push(Collection{id,key,path:parts.join(" / "),library,count});
+        out.push(Collection{id,key,name,parent,path:parts.join(" / "),library,count});
     }
     out.sort_by(|a,b|a.path.cmp(&b.path));Ok(out)
 }
@@ -176,7 +176,7 @@ pub fn attachment_path(lib:&Library,paper:&str,file:&str)->Result<Value> {
 
 struct ContextData<'a> {
     lib:&'a Library, source:&'a Connection, dir:&'a Path, source_id:String,
-    cols:Vec<Collection>, item_cols:HashMap<i64,Vec<i64>>, base:Option<PathBuf>,
+    cols:Vec<Collection>, category_ids:HashMap<i64,String>, item_cols:HashMap<i64,Vec<i64>>, base:Option<PathBuf>,
     copy:bool, notes:bool, annotations:bool,
 }
 impl ContextData<'_> {
@@ -241,10 +241,8 @@ impl ContextData<'_> {
             tx.execute("UPDATE papers SET notes=CASE WHEN notes='' THEN ? ELSE notes||char(10)||char(10)||? END WHERE id=?",params![notes,notes,paper])?;
         }
         tx.execute("INSERT INTO zotero_items(source_id,library_id,item_key,paper_id,metadata,notes_html) VALUES(?,?,?,?,?,?) ON CONFLICT(source_id,library_id,item_key) DO UPDATE SET metadata=excluded.metadata,notes_html=excluded.notes_html",params![self.source_id,library,key,paper,json!({"fields":data,"projection":projection}).to_string(),serde_json::to_string(&notes_html)?])?;
-        for c in self.cols.iter().filter(|c|self.item_cols.get(&id).is_some_and(|ids|ids.contains(&c.id))) {
-            let cid=hash(&format!("{}:{}:{}",self.source_id,c.library,c.key));
-            tx.execute("INSERT INTO categories(id,name,sort_order) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name",params![cid,c.path,c.id])?;
-            tx.execute("INSERT OR IGNORE INTO paper_categories(paper_id,category_id) VALUES(?,?)",params![paper,cid])?;
+        for collection in self.item_cols.get(&id).into_iter().flatten() {
+            if let Some(cid)=self.category_ids.get(collection){tx.execute("INSERT OR IGNORE INTO paper_categories(paper_id,category_id) VALUES(?,?)",params![paper,cid])?;}
         }
         let mut tags=self.source.prepare("SELECT t.name FROM itemTags it JOIN tags t ON t.tagID=it.tagID WHERE it.itemID=?")?;
         for name in tags.query_map([id],|r|r.get::<_,String>(0))? {
@@ -380,7 +378,18 @@ pub fn import(lib:&Library,opts:&Value)->Result<Value> {
     #[cfg(windows)]
     if archive.join("zotero.sqlite").exists() {fs::remove_file(archive.join("zotero.sqlite"))?;}
     fs::rename(archive_tmp,archive.join("zotero.sqlite"))?;
-    let context=ContextData{lib,source:&source,dir:&dir,source_id,cols,item_cols,base:opts["linked_base_dir"].as_str().filter(|s|!s.is_empty()).map(PathBuf::from),copy,notes:opts["include_notes"].as_bool().unwrap_or(true),annotations:opts["include_annotations"].as_bool().unwrap_or(true)};
+    let category_ids:HashMap<i64,String>=cols.iter().map(|c|(c.id,hash(&format!("{}:{}:{}",source_id,c.library,c.key)))).collect();
+    {
+        let conn=lib.conn();let tx=conn.unchecked_transaction()?;
+        for c in &cols {
+            let group_id=if c.library!=1 {Some(hash(&format!("{}:library-root:{}",source_id,c.library)))}else{None};
+            if let Some(group)=&group_id {tx.execute("INSERT INTO categories(id,name,sort_order) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING",params![group,c.path.split(" / ").next().unwrap_or("Zotero library"),c.library])?;}
+            let parent=c.parent.and_then(|parent|category_ids.get(&parent)).cloned().or(group_id);
+            tx.execute("INSERT INTO categories(id,name,parent_id,sort_order) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,parent_id=excluded.parent_id",params![category_ids[&c.id],c.name,parent,c.id])?;
+        }
+        crate::organization::validate_tree(&tx)?;tx.commit()?;
+    }
+    let context=ContextData{lib,source:&source,dir:&dir,source_id,cols,category_ids,item_cols,base:opts["linked_base_dir"].as_str().filter(|s|!s.is_empty()).map(PathBuf::from),copy,notes:opts["include_notes"].as_bool().unwrap_or(true),annotations:opts["include_annotations"].as_bool().unwrap_or(true)};
     let mut stmt=source.prepare(&eligible_sql(&source))?;
     let mut rows=stmt.query([])?;
     let mut report=json!({"source":"sqlite","data_dir":dir,"archive":archive,"items":0,"imported":0,"updated":0,"duplicates":0,"without_pdf":0,"attachments":0,"annotations":0,"collections":context.cols.len(),"missing_attachments":[],"warnings":[],"errors":[]});

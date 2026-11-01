@@ -25,3 +25,5 @@ artifacts/**/outputs/
 artifacts/**/logs/
 artifacts/**/*.png
 *.log
+
+app/public/ocr/

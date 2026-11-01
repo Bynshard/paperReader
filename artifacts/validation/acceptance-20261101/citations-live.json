@@ -1,0 +1,6 @@
+{
+  "scope": "Isolated fixture, exact public DOI lookup and cached second request; no user library",
+  "doi": "10.1038/nature14539",
+  "error": "{'error': 'Crossref：error sending request for url (https://api.crossref.org/works/10.1038%2Fnature14539)；Semantic Scholar：error sending request for url (https://api.semanticscholar.org/graph/v1/paper/DOI:10.1038%2Fnature14539?fields=citationCount%2CexternalIds%2Curl)', 'id': 3, 'ok': False, 'protocol': 1}",
+  "completed": false
+}

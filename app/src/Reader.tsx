@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Annotation, ImportedAttachment, JobEvent, Paper, PdfBytes, Source } from "./types";
 import PaperEditor from "./PaperEditor";
+import MarkdownAnswer from './MarkdownAnswer';
+import DocumentParsing from './DocumentParsing';
 import ImportedFiles from "./ImportedFiles";
 import PdfPane, { PaneApi, Selection } from "./PdfPane";
 import { api, type ChatMessage } from "./api";
@@ -20,6 +22,7 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
       return { page: Math.max(1, Number(saved.page) || 1), fraction: Math.max(0, Math.min(1, Number(saved.fraction) || 0)) };
     } catch { return { page: 1, fraction: 0 }; }
   }, [paper.id]);
+  const [textRevision,setTextRevision]=useState(0),[scope,setScope]=useState('related'),[includeHistory,setIncludeHistory]=useState(true),[contextPreview,setContextPreview]=useState<{prompt:string;history?:string;history_count?:number;context_info?:{pages:number[];characters:number;indexed_pages:number;total_pages:number};warnings?:string[]}|null>(null);
   const [mode, setMode] = useState<Mode>(paper.versions.some((v) => v.kind === "translated") ? "dual" : "source");
   const [scale, setScale] = useState(1.15);
   const [page, setPage] = useState(initialPosition.page);
@@ -36,7 +39,13 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
   const [editing,setEditing]=useState(false);
   const [aiQuestion, setAiQuestion] = useState("");
   const [aiAnswer, setAiAnswer] = useState<{ answer: string; sources: Source[]; warnings?:string[] } | null>(null);
-  const aiRequest=useRef<string|null>(null);
+  const aiRequest=useRef<string|null>(null),previewToken=useRef(0);
+  useEffect(()=>{previewToken.current++;setContextPreview(null);},[source?.versionId,page,scope,includeHistory,aiQuestion,textRevision]);
+  const previewContext=async()=>{
+    const token=++previewToken.current;
+    try{const result=await api.aiAction('preview',{paper_id:paper.id,version_id:source?.versionId,question:aiQuestion,kind:'ask',scope,page:scope==='page'?page-1:undefined,include_history:includeHistory});if(token===previewToken.current)setContextPreview(result as typeof contextPreview);}
+    catch(e){if(token===previewToken.current)setAiError((e as Error).message);}
+  };
   const [aiHistory,setAiHistory]=useState<ChatMessage[]>([]);
   const [aiProvider,setAiProvider]=useState('');
   useEffect(()=>{
@@ -83,6 +92,7 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
   const translatedVersion = useMemo(() => paper.versions.filter((v) => v.kind === "translated").sort((a, b) => b.created_at - a.created_at)[0], [paper]);
   const sourceVersions = useMemo(() => paper.versions.filter((v)=>v.kind==='source').sort((a,b)=>a.created_at-b.created_at || a.id.localeCompare(b.id)),[paper.versions]);
   const isPrimary = !source || source.versionId===sourceVersions[0]?.id;
+  const loadOcr=useCallback(async(page:number)=>source?(await api.blocks(paper.id,source.versionId,page)).filter(b=>b.kind==='ocr'):[],[paper.id,source?.versionId]);
   const sourceAnnotations = useMemo(() => annotations.filter((a) => a.version_kind === "source" && (!a.version_id || a.version_id === source?.versionId)), [annotations, source?.versionId]);
   const translatedAnnotations = useMemo(() => annotations.filter((a) => a.version_kind === "translated" && (!a.version_id || a.version_id === translated?.versionId)), [annotations, translated?.versionId]);
 
@@ -240,7 +250,8 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
       if (kind === "summary") {
         question = `总结第 ${page} 页的主要内容，并列出关键结论。`;
       }
-      const result = await api.aiRun({ request_id:aiRequest.current!, paper_id: paper.id, question, page: kind === "summary" || selection ? (selection?.page ?? page) - 1 : undefined, kind, version_id:source?.versionId });
+      if(kind==='summary'&&source&&sourceApi.current){const blocks=await sourceApi.current.parsePage(page);if(blocks.length){await api.setBlocks(paper.id,source.versionId,page-1,blocks);setTextRevision(v=>v+1);}}
+      const result = await api.aiRun({ request_id:aiRequest.current!, paper_id: paper.id, question, page: kind === "summary" ? page-1 : kind==='explain'&&selection ? selection.page-1 : scope==='page'?page-1:undefined, scope,include_history:includeHistory,kind, version_id:source?.versionId });
       setAiAnswer(result);
       await refreshAiHistory();
     } catch (e) {
@@ -291,6 +302,7 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
     {editing&&<PaperEditor paper={paper} onClose={()=>setEditing(false)} onSaved={p=>{onChanged(p);setEditing(false);}}/>}
     <h2>{paper.title}</h2><p>{paper.authors}</p>
     {error ? <p role="alert">打开 PDF 失败：{error}</p> : <p className="muted">此条目没有可用的 PDF，元数据和笔记已保存。</p>}
+    {paper.short_note&&<p className="paper-short-note">速记：{paper.short_note}</p>}
     {paper.abstract && <p>{paper.abstract}</p>}
     {paper.notes && <section><h3>笔记</h3><div className="migrated-notes">{paper.notes}</div></section>}
     <ImportedFiles paperId={paper.id} files={files} onOpen={chooseSource} onError={onToast}/>
@@ -372,6 +384,7 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
         )}
       </header>
 
+      {source&&<DocumentParsing key={source.versionId} paperId={paper.id} versionId={source.versionId} pages={source.pages} page={page} pane={sourceApi} onIndexed={()=>setTextRevision(v=>v+1)}/>}
       {job && (
         <div className="jobbar">
           <div className="jobbar-text">
@@ -394,6 +407,8 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
               initialPage={page}
               initialFraction={positionRef.current.fraction}
               side="source"
+              loadOcr={loadOcr}
+              textRevision={textRevision}
               registerApi={registerSource}
               onScrollFraction={(p, f) => {
                 activePane.current = "source";
@@ -406,7 +421,7 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
                 if (s) setTab("notes");
               }}
               onBlocks={(pageNo, blocks) => {
-                if (source) api.setBlocks(paper.id, source.versionId, pageNo, blocks).catch(() => undefined);
+                if (source && blocks.length) api.setBlocks(paper.id, source.versionId, pageNo, blocks).catch(() => undefined);
               }}
             />
           )}
@@ -512,6 +527,10 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
                   翻译选区
                 </button>
               </div>
+              <label className="small">提问上下文 <select aria-label="提问上下文" value={scope} disabled={aiBusy} onChange={e=>{setScope(e.target.value);setContextPreview(null);}}><option value="related">相关页检索与取样</option><option value="page">仅当前页</option><option value="full">全文顺序（最多 32000 字）</option></select></label>
+              <label className="small"><input type="checkbox" checked={includeHistory} onChange={e=>setIncludeHistory(e.target.checked)}/>带入当前文档最近 6 轮对话（Codex）</label>
+              <button className="btn tiny" disabled={aiBusy||!source} onClick={()=>void previewContext()}>查看将发送的上下文</button>
+              {contextPreview&&<details open><summary>上下文预览：{contextPreview.context_info?.characters} 字 · 第 {contextPreview.context_info?.pages.join('、')} 页 · 历史 {contextPreview.history_count||0} 轮</summary><p className="small">正文已索引 {contextPreview.context_info?.indexed_pages}/{contextPreview.context_info?.total_pages} 页。只发送以下文字，不发送 PDF 文件或整库。</p>{contextPreview.warnings?.map(w=><p className="small" key={w}>{w}</p>)}<textarea aria-label="上下文预览" readOnly rows={10} value={`${contextPreview.history||''}\n\n${contextPreview.prompt}`}/></details>}
               <div className="ai-input">
                 <textarea
                   value={aiQuestion}
@@ -531,7 +550,7 @@ export default function Reader({ paper, onBack, onChanged, onToast }: Props) {
                 <div className="ai-answer">
                   {aiAnswer.warnings?.map(w=><p role="alert" key={w}>{w}</p>)}
                   <div className="row-actions"><button className="btn tiny" disabled={aiBusy} onClick={()=>void api.appendNote(paper.id,`AI 阅读记录\n${aiAnswer.answer}\n\n原文依据：${aiAnswer.sources.map(s=>`[${s.n}] 第 ${s.page+1} 页 ${s.text}`).join('\n')}`).then(p=>{onChanged(p);onToast('回答已保存到笔记');}).catch(e=>onToast(e.message))}>保存到笔记</button><button className="btn tiny" disabled={aiBusy} onClick={()=>void api.saveText('论文阅读记录.md',`# ${paper.title}\n\n${aiAnswer.answer}\n\n${aiAnswer.sources.map(s=>`[${s.n}] 第 ${s.page+1} 页：${s.text}`).join('\n')}`).catch(e=>onToast(e.message))}>导出回答</button></div>
-                  <div className="answer-text">{aiAnswer.answer}</div>
+                  <MarkdownAnswer text={aiAnswer.answer}/>
                   {aiAnswer.sources.length > 0 && (
                     <div className="sources">
                       <div className="sources-title">原文依据</div>

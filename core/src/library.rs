@@ -137,6 +137,7 @@ impl Library {
             conn.execute_batch("ALTER TABLE annotations ADD COLUMN version_id TEXT;")?;
         }
         conn.execute_batch(crate::zotero_local::SCHEMA)?;
+        crate::organization::initialize(&conn)?;
         crate::sync::initialize(&conn)?;
         crate::search::initialize(&conn)?;
         conn.execute("UPDATE jobs SET status='failed',error='应用上次异常退出，任务已中断；可重试',updated_at=? WHERE status NOT IN ('completed','failed','cancelled')",[now_ms()])?;
@@ -301,6 +302,7 @@ impl Library {
             "read_status": row.get::<_, String>("read_status")?,
             "deleted": row.get::<_, Option<i64>>("deleted_at")?.is_some(),
             "notes": row.get::<_, String>("notes")?,
+            "short_note":row.get::<_,String>("short_note")?,"citation_count":row.get::<_,Option<i64>>("citation_count")?,"citation_source":row.get::<_,Option<String>>("citation_source")?,"citation_updated_at":row.get::<_,Option<i64>>("citation_updated_at")?,"citation_url":row.get::<_,Option<String>>("citation_url")?,
         });
         drop(rows);
         drop(stmt);
@@ -318,8 +320,8 @@ impl Library {
             rows.filter_map(Result::ok).collect()
         };
         let categories: Vec<Value> = {
-            let mut stmt = conn.prepare("SELECT c.id,c.name,c.color FROM categories c JOIN paper_categories pc ON pc.category_id=c.id WHERE pc.paper_id=?")?;
-            let rows = stmt.query_map(params![paper_id], |r| Ok(json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "color": r.get::<_, Option<String>>(2)?})))?;
+            let mut stmt = conn.prepare("SELECT c.id,c.name,c.color,c.parent_id FROM categories c JOIN paper_categories pc ON pc.category_id=c.id WHERE pc.paper_id=?")?;
+            let rows = stmt.query_map(params![paper_id], |r| Ok(json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "color": r.get::<_, Option<String>>(2)?,"parent_id":r.get::<_,Option<String>>(3)?})))?;
             rows.filter_map(Result::ok).collect()
         };
         let tags: Vec<Value> = {
@@ -381,12 +383,13 @@ impl Library {
     }
 
     pub fn update_paper(&self, paper_id: &str, fields: &Value) -> Result<Value> {
-        let allowed = ["title", "authors", "year", "venue", "doi", "arxiv", "abstract", "read_status", "notes"];
+        let allowed = ["title", "authors", "year", "venue", "doi", "arxiv", "abstract", "read_status", "notes", "short_note"];
         let mut sets: Vec<String> = Vec::new();
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         if let Value::Object(map) = fields {
             for key in allowed {
                 if let Some(v) = map.get(key) {
+                    if key=="short_note"{anyhow::ensure!(v.as_str().unwrap_or("").chars().count()<=300,"一句话速记最多 300 字");}
                     sets.push(format!("{key}=?"));
                     args.push(Box::new(v.as_str().unwrap_or_default().to_string()));
                 }
@@ -420,10 +423,10 @@ impl Library {
             let conn=self.conn();let tx=conn.unchecked_transaction()?;
             let current:i64=tx.query_row("SELECT updated_at FROM papers WHERE id=?",[id],|r|r.get(0))?;
             if let Some(expected)=p["expected_updated_at"].as_i64(){anyhow::ensure!(expected==current,"资料已在其他位置修改，请重新打开编辑窗口");}
-            let names=["title","authors","year","venue","doi","arxiv","abstract","notes","read_status"];
+            let names=["title","authors","year","venue","doi","arxiv","abstract","notes","read_status","short_note"];
             let mut args=Vec::<rusqlite::types::Value>::new();
             let mut sets=Vec::new();
-            for key in names {if let Some(value)=fields.get(key){let text=value.as_str().ok_or_else(||anyhow!("字段必须是文本"))?;anyhow::ensure!(text.len()<=1_000_000,"字段过长");sets.push(format!("{key}=?"));args.push(text.to_string().into());}}
+            for key in names {if let Some(value)=fields.get(key){let text=value.as_str().ok_or_else(||anyhow!("字段必须是文本"))?;if key=="short_note"{anyhow::ensure!(text.chars().count()<=300,"一句话速记最多 300 字");}anyhow::ensure!(text.len()<=1_000_000,"字段过长");sets.push(format!("{key}=?"));args.push(text.to_string().into());}}
             sets.push("updated_at=?".into());args.push(now_ms().max(current+1).into());args.push(id.to_string().into());
             tx.execute(&format!("UPDATE papers SET {} WHERE id=?",sets.join(",")),rusqlite::params_from_iter(args))?;
             if let Some(ids)=p["category_ids"].as_array(){
@@ -498,8 +501,8 @@ impl Library {
     pub fn taxonomy(&self) -> Result<Value> {
         let conn = self.conn();
         let cats: Vec<Value> = {
-            let mut stmt = conn.prepare("SELECT id,name,color FROM categories ORDER BY sort_order,name")?;
-            let mapped = stmt.query_map([], |r| Ok(json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "color": r.get::<_, Option<String>>(2)?})))?;
+            let mut stmt = conn.prepare("SELECT id,name,color,parent_id FROM categories ORDER BY sort_order,name")?;
+            let mapped = stmt.query_map([], |r| Ok(json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "color": r.get::<_, Option<String>>(2)?,"parent_id":r.get::<_,Option<String>>(3)?})))?;
             let collected: Vec<Value> = mapped.filter_map(Result::ok).collect();
             collected
         };
@@ -548,9 +551,7 @@ impl Library {
     }
 
     pub fn add_category(&self, name: &str) -> Result<Value> {
-        let id = Uuid::new_v4().to_string();
-        self.conn().execute("INSERT INTO categories(id,name,sort_order) VALUES(?,?,?)", params![id, name, now_ms()])?;
-        Ok(json!({"id": id, "name": name}))
+        crate::organization::folder_save(self,&json!({"name":name}))
     }
 
     // ---- annotations ----------------------------------------------------
@@ -635,14 +636,25 @@ impl Library {
 
     // ---- blocks ---------------------------------------------------------
     pub fn set_blocks(&self, paper_id: &str, version_id: &str, page: i64, blocks: Vec<Value>) -> Result<()> {
-        let prepared: Vec<(String,i64,String,String)> = blocks.iter().enumerate().filter_map(|(i,block)| {
+        anyhow::ensure!(blocks.len()<=10000,"too many text blocks on one page");
+        anyhow::ensure!(blocks.iter().map(|b|b["text"].as_str().unwrap_or("").len()).sum::<usize>()<=2_000_000,"page text too large");
+        let prepared: Vec<(String,i64,String,String,String)> = blocks.iter().enumerate().filter_map(|(i,block)| {
             let text=block.get("text").and_then(Value::as_str).unwrap_or("").trim();
             if text.is_empty() { return None; }
             let bbox=block.get("bbox").cloned().unwrap_or(json!([]));
-            let id=format!("{:x}",Sha256::digest(format!("{version_id}:{page}:{i}:{bbox}:{text}")));
-            Some((id,i as i64,bbox.to_string(),text.to_string()))
+            let kind=if block["kind"]=="ocr"{"ocr"}else{"text"};
+            let id=format!("{:x}",Sha256::digest(format!("{version_id}:{page}:{i}:{bbox}:{text}:{kind}")));
+            Some((id,i as i64,bbox.to_string(),text.to_string(),kind.into()))
         }).collect();
         let conn = self.conn();
+        let pages:i64=conn.query_row("SELECT pages FROM versions WHERE id=? AND paper_id=?",params![version_id,paper_id],|r|r.get(0))?;
+        anyhow::ensure!(page>=0&&page<pages,"page outside document");
+        if prepared.is_empty(){return Ok(());}
+        // Revisiting a scanned page must not replace cached OCR with a tiny native header.
+        if prepared.iter().all(|row|row.4=="text") {
+            let old:i64=conn.query_row("SELECT coalesce(sum(length(text)),0) FROM blocks WHERE paper_id=? AND version_id=? AND page=? AND kind='ocr'",params![paper_id,version_id,page],|r|r.get(0))?;
+            if old>prepared.iter().map(|row|row.3.chars().count() as i64).sum::<i64>(){return Ok(());}
+        }
         {
             let mut stmt=conn.prepare("SELECT id FROM blocks WHERE paper_id=? AND version_id=? AND page=? ORDER BY block_index")?;
             let old=stmt.query_map(params![paper_id,version_id,page],|r|r.get::<_,String>(0))?
@@ -651,10 +663,10 @@ impl Library {
         }
         let tx = conn.unchecked_transaction()?;
         tx.execute("DELETE FROM blocks WHERE paper_id=? AND version_id=? AND page=?", params![paper_id, version_id, page])?;
-        for (id,i,bbox,text) in prepared {
+        for (id,i,bbox,text,kind) in prepared {
             tx.execute(
                 "INSERT INTO blocks(id,paper_id,version_id,page,block_index,kind,bbox,text) VALUES(?,?,?,?,?,?,?,?)",
-                params![id, paper_id, version_id, page, i, "text", bbox, text],
+                params![id, paper_id, version_id, page, i, kind, bbox, text],
             )?;
         }
         tx.commit()?;

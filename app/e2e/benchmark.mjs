@@ -58,7 +58,7 @@ try {
   console.log('library startup',samples.library_first_visible);
   report.mounted_library_rows=await page.locator('.paper-row').count();
   assert(report.mounted_library_rows<30,'library virtualization is unbounded');
-  const search=page.getByPlaceholder('搜索标题、作者、DOI 或正文…');
+  const search=page.getByRole('textbox',{name:'论文搜索',exact:true});
   const searches=[];
   for(let i=0;i<10;i++){
     const query=`Paper ${String(Math.min(1200,fixtures.count-20)+i).padStart(5,'0')}`;

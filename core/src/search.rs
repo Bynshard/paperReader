@@ -16,6 +16,7 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     for (index, table, fields) in [
         ("papers_search", "papers", "title,authors,doi,arxiv,abstract"),
         ("blocks_search", "blocks", "text"),
+        ("short_notes_search", "papers", "short_note"),
     ] {
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?)", [index], |r| r.get(0))?;
@@ -53,7 +54,7 @@ pub fn list_page(conn: &Connection, p: &Value) -> Result<Value> {
     if p["favorite"].as_bool().unwrap_or(false) { filters.push("p.favorite=1".into()); }
     for (key, predicate) in [
         ("status", "p.read_status=?"),
-        ("category", "p.id IN (SELECT paper_id FROM paper_categories WHERE category_id=?)"),
+        ("category", "p.id IN (WITH RECURSIVE descendants(id) AS (SELECT id FROM categories WHERE id=? UNION SELECT c.id FROM categories c JOIN descendants d ON c.parent_id=d.id) SELECT pc.paper_id FROM paper_categories pc JOIN descendants d ON pc.category_id=d.id)"),
         ("tag", "p.id IN (SELECT pt.paper_id FROM paper_tags pt JOIN tags t ON t.id=pt.tag_id WHERE t.name=?)"),
     ] {
         if let Some(value) = p[key].as_str().filter(|s| !s.is_empty()) {
@@ -68,8 +69,9 @@ pub fn list_page(conn: &Connection, p: &Value) -> Result<Value> {
         let matches: Vec<i64> = if query.chars().count() >= 3 {
             // Deduplicate body paper IDs BEFORE looking up papers, rather than
             // doing a primary-key lookup for every matching text fragment.
-            let mut stmt = conn.prepare("SELECT rowid FROM papers_search WHERE papers_search MATCH ? UNION SELECT rowid FROM papers WHERE id IN (SELECT paper_id FROM blocks WHERE rowid IN (SELECT rowid FROM blocks_search WHERE blocks_search MATCH ?))")?;
-            let rows = stmt.query_map([&quoted, &quoted], |r| r.get(0))?;
+            let mut stmt = conn.prepare("SELECT rowid FROM papers_search WHERE papers_search MATCH ? UNION SELECT rowid FROM papers WHERE id IN (SELECT paper_id FROM blocks WHERE rowid IN (SELECT rowid FROM blocks_search WHERE blocks_search MATCH ?)) UNION SELECT rowid FROM short_notes_search WHERE short_notes_search MATCH ? UNION SELECT rowid FROM papers WHERE id IN (SELECT pt.paper_id FROM paper_tags pt JOIN tags t ON t.id=pt.tag_id WHERE t.name LIKE ? ESCAPE '!')")?;
+            let tag_like=format!("%{}%",query.replace('!',"!!").replace('%',"!%").replace('_',"!_"));
+            let rows = stmt.query_map([&quoted, &quoted,&quoted,&tag_like], |r| r.get(0))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         } else {
             // Trigrams cannot index <3 characters. Bound the fallback to
@@ -77,8 +79,8 @@ pub fn list_page(conn: &Connection, p: &Value) -> Result<Value> {
             let literal = query.replace('!', "!!").replace('%', "!%").replace('_', "!_");
             let like = format!("%{literal}%");
             let prefix = format!("{quoted}*");
-            let mut stmt = conn.prepare("SELECT rowid FROM papers WHERE title LIKE ? ESCAPE '!' OR authors LIKE ? ESCAPE '!' OR doi LIKE ? ESCAPE '!' OR id IN (SELECT paper_id FROM blocks_fts WHERE blocks_fts MATCH ?)")?;
-            let rows = stmt.query_map([&like, &like, &like, &prefix], |r| r.get(0))?;
+            let mut stmt = conn.prepare("SELECT rowid FROM papers WHERE title LIKE ? ESCAPE '!' OR authors LIKE ? ESCAPE '!' OR doi LIKE ? ESCAPE '!' OR short_note LIKE ? ESCAPE '!' OR id IN (SELECT pt.paper_id FROM paper_tags pt JOIN tags t ON t.id=pt.tag_id WHERE t.name LIKE ? ESCAPE '!') OR id IN (SELECT paper_id FROM blocks_fts WHERE blocks_fts MATCH ?)")?;
+            let rows = stmt.query_map([&like, &like, &like,&like,&like, &prefix], |r| r.get(0))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         // Count and page reuse this request's match set. JSON1 avoids SQLite's
@@ -91,9 +93,10 @@ pub fn list_page(conn: &Connection, p: &Value) -> Result<Value> {
     let order = match p["sort"].as_str().unwrap_or("recent") {
         "title" => "p.title COLLATE NOCASE ASC,p.id ASC",
         "year" => "p.year DESC,p.id DESC",
+        "citations" => "p.citation_count DESC,p.imported_at DESC,p.id DESC",
         _ => "p.imported_at DESC,p.id DESC",
     };
-    let sql = format!("SELECT p.id,p.title,p.authors,p.year,p.venue,p.doi,p.arxiv,p.imported_at,p.updated_at,p.favorite,p.read_status,p.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM versions v WHERE v.paper_id=p.id AND v.kind='translated') FROM papers p WHERE {where_sql} ORDER BY {order} LIMIT ? OFFSET ?");
+    let sql = format!("SELECT p.id,p.title,p.authors,p.year,p.venue,p.doi,p.arxiv,p.imported_at,p.updated_at,p.favorite,p.read_status,p.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM versions v WHERE v.paper_id=p.id AND v.kind='translated'),p.short_note,p.citation_count,p.citation_source,p.citation_updated_at,p.citation_url FROM papers p WHERE {where_sql} ORDER BY {order} LIMIT ? OFFSET ?");
     args.extend([SqlValue::Integer(limit),SqlValue::Integer(offset)]);
     let mut stmt = conn.prepare(&sql)?;
     let mut items = stmt.query_map(params_from_iter(args.iter()), |r| Ok(json!({
@@ -103,6 +106,7 @@ pub fn list_page(conn: &Connection, p: &Value) -> Result<Value> {
         "imported_at":r.get::<_,i64>(7)?,"updated_at":r.get::<_,i64>(8)?,
         "favorite":r.get::<_,bool>(9)?,"read_status":r.get::<_,String>(10)?,
         "deleted":r.get::<_,bool>(11)?,"has_translation":r.get::<_,bool>(12)?,
+        "short_note":r.get::<_,String>(13)?,"citation_count":r.get::<_,Option<i64>>(14)?,"citation_source":r.get::<_,Option<String>>(15)?,"citation_updated_at":r.get::<_,Option<i64>>(16)?,"citation_url":r.get::<_,Option<String>>(17)?,
         "categories":[],"tags":[]
     })))?.collect::<rusqlite::Result<Vec<_>>>()?;
     if !items.is_empty() {

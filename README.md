@@ -18,6 +18,7 @@
 - [可靠性与真实发布验收](docs/RELEASE_VALIDATION.md)：故障修复、资料编辑、备份恢复、任务中心、Linux 预发布包和万篇复测。
 - [Codex 账号与 AI 对话](docs/CODEX.md)：浏览器认证、账号额度、流式问答、历史与验证边界。
 - [云同步](docs/CLOUD_SYNC.md)：七牛、阿里云 OSS、坚果云/WebDAV 配置、增量同步和冲突处理。
+- [目录、标签、速记与引用量](docs/LIBRARY_ORGANIZATION.md)：本地待验收的新管理入口、缓存和数据兼容说明。
 - [Zotero 兼容](docs/ZOTERO.md)：数据库/本地 API 两种迁移方式、字段映射与实测记录。
 - [原生 GUI 复用评估](docs/RUST_GUI_REUSE.md)：miro / BarePDF / GPUI 候选对比与双轨决策。
 - [用户提供的版面参考](docs/assets/reference-translation.png)：以双栏和段落区域大致同位为目标，不要求中英逐行等长。

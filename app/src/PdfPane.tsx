@@ -3,16 +3,19 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import * as pdfjsLib from "pdfjs-dist";
 import "pdfjs-dist/web/pdf_viewer.css";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import {recognizePage} from './ocr';
 import type { Annotation } from "./types";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 type Rect = Annotation["rects"][number];
-type Block = { bbox: number[]; text: string };
+export type TextBlock = { bbox: number[]; text: string; kind?:string };
+type Block = TextBlock;
 export type Selection = { page: number; rects: Rect[]; quote: string; side: "source" | "translated" };
 export type PaneApi = {
   // Navigation is silent. Only actual user scrolling emits synchronization events.
   goTo: (page: number, fraction?: number, bbox?: number[]) => void;
   getPosition: () => { page: number; fraction: number };
+  parsePage: (page:number, options?:{forceOcr?:boolean;signal?:AbortSignal;progress?:(message:string)=>void}) => Promise<Block[]>;
 };
 type Props = {
   bytes: Uint8Array; scale: number; annotations: Annotation[];
@@ -22,6 +25,8 @@ type Props = {
   onScrollFraction?: (page: number, fraction: number) => void;
   // Storage uses zero-based pages throughout the backend.
   onBlocks?: (page: number, blocks: Block[]) => void;
+  loadOcr?: (page:number) => Promise<Block[]>;
+  textRevision?:number;
   registerApi?: (api: PaneApi | null) => void;
   side: "source" | "translated";
 };
@@ -46,10 +51,12 @@ function groupBlocks(items: any[], viewport: any): Block[] {
   return blocks;
 }
 
-const PageView = memo(function PageView({ doc, index, scale, annotations, onSize, onBlocks, focus }: {
+const PageView = memo(function PageView({ doc, index, scale, annotations, onSize, onBlocks, loadOcr, textRevision, focus }: {
   doc: pdfjsLib.PDFDocumentProxy; index: number; scale: number; annotations: Annotation[];
   onSize: (index: number, width: number, height: number) => void;
   onBlocks: (index: number, blocks: Block[]) => void;
+  loadOcr?: (page:number) => Promise<Block[]>;
+  textRevision?:number;
   focus?: number[];
 }) {
   const mount = useRef<HTMLDivElement>(null);
@@ -87,9 +94,24 @@ const PageView = memo(function PageView({ doc, index, scale, annotations, onSize
       task = page.render({ canvasContext: ctx, viewport, transform: dpr === 1 ? undefined : [dpr, 0, 0, dpr, 0, 0] });
       const content = await page.getTextContent();
       if (cancelled) return;
-      onBlocks(index, groupBlocks(content.items, natural));
-      textTask = new pdfjsLib.TextLayer({ textContentSource: content, container: text, viewport });
-      await Promise.all([task.promise, textTask.render()]);
+      const native=groupBlocks(content.items,natural);
+      const saved=loadOcr?await loadOcr(index):[];
+      if(cancelled)return;
+      if(native.length&&!saved.length)onBlocks(index,native);
+      if(saved.length){
+        const measure=document.createElement('canvas').getContext('2d');
+        for(const block of saved){
+          const [x,y,right,bottom]=block.bbox;
+          if(block.bbox.length!==4||!block.bbox.every(Number.isFinite)||right<=x||bottom<=y)continue;
+          const span=document.createElement('span'),font=Math.max(1,(bottom-y)*scale);
+          span.textContent=block.text;span.dataset.ocr='true';
+          Object.assign(span.style,{left:`${x*scale}px`,top:`${y*scale}px`,fontSize:`${font}px`,fontFamily:'sans-serif',height:`${font}px`,lineHeight:'1'});
+          if(measure){measure.font=`${font}px sans-serif`;span.style.transform=`scaleX(${(right-x)*scale/Math.max(1,measure.measureText(block.text).width)})`;}
+          text.append(span);
+        }
+      }
+      if(native.length&&!saved.length)textTask = new pdfjsLib.TextLayer({ textContentSource: content, container: text, viewport });
+      await Promise.all([task.promise, textTask?.render()]);
       if (!cancelled) {
         canvas.dataset.rendered = "true";
         canvas.dataset.scale = String(scale);
@@ -107,7 +129,7 @@ const PageView = memo(function PageView({ doc, index, scale, annotations, onSize
       if (task) void task.promise.catch(() => undefined).finally(() => { canvas.width = 0; canvas.height = 0; page?.cleanup(); });
       else { canvas.width = 0; canvas.height = 0; page?.cleanup(); }
     };
-  }, [doc, index, scale, onSize, onBlocks]);
+  }, [doc, index, scale, onSize, onBlocks, loadOcr, textRevision]);
   return <>
     <div className="page-canvas" ref={mount} />
     {error && <div className="page-error" role="alert">{error}</div>}
@@ -180,12 +202,31 @@ export default function PdfPane(props: Props) {
     if (bbox?.length === 4) setFocus({ page: index, bbox });
     // Never invoke onPageChange from here: the other pane may be the caller.
   }, []);
+  const parsePage=useCallback(async(pageNumber:number,options:{forceOcr?:boolean;signal?:AbortSignal;progress?:(message:string)=>void}={})=>{
+    const document=state.current.doc;
+    if(!document)throw new Error('PDF 尚未加载');
+    if(pageNumber<1||pageNumber>document.numPages)throw new Error('页码无效');
+    const page=await document.getPage(pageNumber),natural=page.getViewport({scale:1});
+    const text=groupBlocks((await page.getTextContent()).items,natural);
+    if(!options.forceOcr && text.reduce((n,b)=>n+b.text.trim().length,0)>=20){page.cleanup();return text;}
+    const cached=await latest.current.loadOcr?.(pageNumber-1);
+    if(!options.forceOcr&&cached?.length){page.cleanup();return cached;}
+    if(options.signal?.aborted)throw new Error('解析已取消');
+    const scale=Math.min(3,Math.sqrt(8_388_608/(natural.width*natural.height)),8192/Math.max(natural.width,natural.height));
+    const viewport=page.getViewport({scale}),canvas=window.document.createElement('canvas');
+    canvas.width=Math.max(1,Math.ceil(viewport.width));canvas.height=Math.max(1,Math.ceil(viewport.height));
+    const ctx=canvas.getContext('2d');if(!ctx)throw new Error('无法创建 OCR 图像');
+    const task=page.render({canvasContext:ctx,viewport}),cancel=()=>task.cancel();
+    options.signal?.addEventListener('abort',cancel,{once:true});
+    try{await task.promise;return await recognizePage(canvas,natural.width,natural.height,options.progress||(()=>{}),options.signal);}
+    finally{options.signal?.removeEventListener('abort',cancel);canvas.width=0;canvas.height=0;page.cleanup();}
+  },[]);
   useEffect(() => {
     if (!doc) return;
     virtual.measure();
-    registerApi?.({ goTo, getPosition: position });
+    registerApi?.({ goTo, getPosition: position,parsePage });
     return () => registerApi?.(null);
-  }, [doc, scale, registerApi, goTo, position, virtual]);
+  }, [doc, scale, registerApi, goTo, position, virtual,parsePage]);
   useEffect(() => {
     if (doc) {
       goTo(latest.current.initialPage ?? 1, latest.current.initialFraction ?? 0);
@@ -234,7 +275,7 @@ export default function PdfPane(props: Props) {
         {doc && items.map((item) => <div key={item.key} className="page-holder" data-page={item.index+1}
           style={{ width: (sizes.current.get(item.index)?.w ?? natural.w)*scale, height: item.size, position: "absolute", top: 0, left: "50%", transform: `translate(-50%, ${item.start}px)`, "--scale-factor": scale } as React.CSSProperties}>
           <PageView doc={doc} index={item.index} scale={scale} annotations={byPage.get(item.index) ?? EMPTY_ANNOTATIONS}
-            onSize={onSize} onBlocks={onBlocks} focus={focus?.page === item.index ? focus.bbox : undefined} />
+            onSize={onSize} onBlocks={onBlocks} loadOcr={props.loadOcr} textRevision={props.textRevision} focus={focus?.page === item.index ? focus.bbox : undefined} />
         </div>)}
       </div>
     </div>

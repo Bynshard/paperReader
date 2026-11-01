@@ -108,6 +108,7 @@ fn handle(
     let mut body = String::new();
     request.as_reader().take(16 * 1024 * 1024).read_to_string(&mut body)?;
     let mut payload: Value = serde_json::from_str(&body).unwrap_or_else(|_| json!({"error": "invalid json"}));
+    let routed=reqwest::Url::parse(upstream).ok().and_then(|url|url.host_str().map(str::to_string)).as_deref()==Some("opencode.ai");
     if let Value::Object(ref mut map) = payload {
         map.insert("model".into(), Value::String(model.to_string()));
         if let Some(reasoning) = map.remove("reasoning") {
@@ -120,15 +121,18 @@ fn handle(
                 map.entry("reasoning_effort").or_insert(Value::String(effort));
             }
         }
+        // BabelDOC uses "none" as a local switch; generic providers may reject
+        // it as an unknown/unsupported reasoning parameter.
+        if !routed && map.get("reasoning_effort").and_then(Value::as_str)==Some("none") {map.remove("reasoning_effort");}
     }
     let started = Instant::now();
-    let response = client
+    let mut upstream_request = client
         .post(format!("{upstream}/chat/completions"))
         .bearer_auth(upstream_key)
-        .header("x-opencode-session", session)
         .header("Content-Type", "application/json")
-        .json(&payload)
-        .send();
+        .json(&payload);
+    if routed {upstream_request=upstream_request.header("x-opencode-session",session);}
+    let response=upstream_request.send();
     let (status, text, usage) = match response {
         Ok(resp) => {
             let status = resp.status().as_u16();

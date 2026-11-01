@@ -51,3 +51,7 @@ Windows 测试中已避开 shell glob 和 `.cjs` shebang，原生 helper 与同�
 ## 发布新版本
 
 先将 `app/package.json`、锁文件及核心版本更新为一致的版本号，提交后推送对应的 `v版本号` 标签。标签触发完整 Windows 构建和测试，全部通过后自动创建预发布 Release，上传 ZIP、SHA-256 和构建清单；标签必须与包版本一致。普通分支提交仅上传 Actions artifact。
+
+## 尚未发布的本地改进
+
+待发布版本在“设置与状态”新增翻译 API 地址、Key、模型与 BabelDOC 路径配置；阅读器新增按页/全文解析和本地 OCR，以及问答上下文范围和预览。现有 v0.1.0 包没有这些入口。新增 Windows E2E 要求实际加载随包提供的 Worker、WASM、英中语言数据，识别后检查可选文字层和索引内容；本轮尚未运行或发布。

@@ -1,0 +1,101 @@
+{
+  "scope": "Real Electron/main/preload/Rust/file:// PDF.js; isolated library; OS file chooser, AI model and translation executable mocked; no model-quality claim",
+  "steps": [
+    {
+      "name": "actual_desktop_startup",
+      "status": "pass",
+      "ms": 1007.1,
+      "result": {
+        "url_scheme": "file",
+        "version": "0.1.0",
+        "user_data_isolated": true
+      }
+    },
+    {
+      "name": "import_via_ui_and_native_ipc",
+      "status": "pass",
+      "ms": 340.7,
+      "result": {
+        "papers": 1
+      }
+    },
+    {
+      "name": "nested_folders_bulk_tags_and_parent_filter",
+      "status": "pass",
+      "ms": 449.06
+    },
+    {
+      "name": "inline_note_search_column_preferences_and_resize",
+      "status": "pass",
+      "ms": 956.93
+    },
+    {
+      "name": "favorite_via_ui",
+      "status": "pass",
+      "ms": 54.61
+    },
+    {
+      "name": "translation_settings_entry_and_url_validation",
+      "status": "pass",
+      "ms": 171.01
+    },
+    {
+      "name": "pdf_render_through_file_protocol_and_ipc",
+      "status": "pass",
+      "ms": 319.53,
+      "result": {
+        "canvases": 3
+      }
+    },
+    {
+      "name": "real_offline_ocr_selectable_layer_and_context",
+      "status": "pass",
+      "ms": 5866.62,
+      "result": {
+        "blocks": 45,
+        "characters": 2842
+      }
+    },
+    {
+      "name": "selection_highlight_persistence",
+      "status": "pass",
+      "ms": 66.12
+    },
+    {
+      "name": "ai_rpc_and_source_navigation_mock_model",
+      "status": "pass",
+      "ms": 232.41
+    },
+    {
+      "name": "translation_job_and_dual_pdf_mock_engine",
+      "status": "pass",
+      "ms": 968.32
+    },
+    {
+      "name": "restart_real_desktop_retains_library_and_annotations",
+      "status": "pass",
+      "ms": 1063.44,
+      "result": {
+        "versions": 2,
+        "annotations": 1
+      }
+    },
+    {
+      "name": "trash_restore_via_ui",
+      "status": "pass",
+      "ms": 271.25
+    },
+    {
+      "name": "image_only_pdf_automatic_ocr_fallback",
+      "status": "pass",
+      "ms": 6512.87,
+      "result": {
+        "sources": 48,
+        "context_characters": 3600
+      }
+    }
+  ],
+  "page_errors": [],
+  "ai_history_restored": true,
+  "completed": true
+}

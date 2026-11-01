@@ -3,16 +3,17 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Reader from '../src/Reader';
 import type { Paper } from '../src/types';
-const {mocks, panes}=vi.hoisted(()=>({mocks:{pdf:vi.fn(),annotations:vi.fn(),zoteroFiles:vi.fn(),addAnnotation:vi.fn(),setBlocks:vi.fn(),aiRun:vi.fn(),aiHistory:vi.fn(),listJobs:vi.fn(),aiPreferences:vi.fn(),aiAction:vi.fn(),onEvent:vi.fn()},panes:{current:{} as Record<string,any>}}));
+const {mocks, panes}=vi.hoisted(()=>({mocks:{pdf:vi.fn(),annotations:vi.fn(),zoteroFiles:vi.fn(),addAnnotation:vi.fn(),setBlocks:vi.fn(),textStatus:vi.fn(),blocks:vi.fn(),aiRun:vi.fn(),aiHistory:vi.fn(),listJobs:vi.fn(),aiPreferences:vi.fn(),aiAction:vi.fn(),onEvent:vi.fn()},panes:{current:{} as Record<string,any>}}));
 vi.mock('../src/api',()=>({api:mocks}));
 vi.mock('../src/PdfPane',()=>({default:(props:any)=>{
   panes.current[props.side]=props;
-  useEffect(()=>{const a={goTo:vi.fn(),getPosition:()=>({page:3,fraction:0.2})};panes.current[`${props.side}Api`]=a;props.registerApi(a);return()=>props.registerApi(null);},[props.registerApi]);
+  useEffect(()=>{const a={goTo:vi.fn(),parsePage:vi.fn().mockResolvedValue([{bbox:[1,2,3,4],text:'Page source text for summary',kind:'text'}]),getPosition:()=>({page:3,fraction:0.2})};panes.current[`${props.side}Api`]=a;props.registerApi(a);return()=>props.registerApi(null);},[props.registerApi]);
   return <button onClick={()=>props.onSelect({page:3,rects:[{x:.1,y:.1,w:.1,h:.1}],quote:'selected words',side:props.side})}>select {props.side}</button>;
 }}));
 const paper:Paper={id:'paper',title:'Example',authors:'Author',imported_at:0,updated_at:0,favorite:false,read_status:'unread',deleted:false,notes:'',categories:[],tags:[],versions:[{id:'src',paper_id:'paper',kind:'source',sha256:'x',rel_path:'x',pages:10,bytes:1,lang:'en',created_at:0},{id:'trans',paper_id:'paper',kind:'translated',sha256:'y',rel_path:'y',pages:10,bytes:1,lang:'zh',created_at:1}]};
 beforeEach(()=>{
   vi.clearAllMocks();panes.current={};
+  mocks.textStatus.mockResolvedValue({indexed_pages:1,pages:10});mocks.blocks.mockResolvedValue([]);
   mocks.listJobs.mockResolvedValue([]);mocks.aiHistory.mockResolvedValue([]);mocks.aiPreferences.mockResolvedValue({provider:'codex'});mocks.aiAction.mockResolvedValue({});
   mocks.zoteroFiles.mockResolvedValue([]);
   mocks.pdf.mockImplementation((_id,kind,version)=>Promise.resolve({bytes:new Uint8Array([1]),versionId:version || (kind==='source'?'src':'trans'),pages:10}));

@@ -12,7 +12,7 @@ export type Version = {
   created_at: number;
 };
 
-export type Category = { id: string; name: string; color?: string | null };
+export type Category = { id: string; name: string; color?: string | null; parent_id?:string|null };
 export type ImportedAttachment = { id:string; title:string; content_type:string; status:"copied"|"linked"|"missing"; version_id?:string|null };
 export type SyncProfile = {provider:'qiniu'|'aliyun'|'webdav'|'s3';endpoint:string;bucket:string;region:string;prefix:string;username:string;password?:string;access_key?:string;secret_key?:string;force_path_style:boolean;request_rate?:number};
 export type SyncSettings = {profile:SyncProfile|null;credentials_saved:boolean;auto_minutes:number};
@@ -36,6 +36,11 @@ export type Paper = {
   read_status: "unread" | "reading" | "read";
   deleted: boolean;
   notes: string;
+  short_note?:string;
+  citation_count?:number|null;
+  citation_source?:string|null;
+  citation_updated_at?:number|null;
+  citation_url?:string|null;
   categories: Category[];
   tags: Tag[];
   versions: Version[];
@@ -51,7 +56,7 @@ export type Block = {
 };
 
 export type PaperSummary = Omit<Paper, "versions" | "abstract" | "notes"> & { has_translation: boolean };
-export type PaperSort = "recent" | "title" | "year";
+export type PaperSort = "recent" | "title" | "year" | "citations";
 export type PaperPageOptions = {
   query?: string; category?: string; tag?: string; trashed?: boolean;
   status?: string; favorite?: boolean; sort?: PaperSort; offset?: number; limit?: number;

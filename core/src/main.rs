@@ -9,6 +9,8 @@
 //!   <- {"event":"job","jobId":"...","status":"translating"}
 
 mod ai;
+mod organization;
+mod citations;
 mod backup;
 mod engine;
 mod library;
@@ -133,7 +135,7 @@ fn main() {
             }
         };
         let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-        if method == "list_papers_page" || matches!(method, "import_pdfs" | "zotero_import" | "zotero_api_import" | "explain" | "translate_text" | "export" | "backup_create" | "backup_restore") {
+        if method == "list_papers_page" || matches!(method, "import_pdfs" | "zotero_import" | "zotero_api_import" | "explain" | "translate_text" | "export" | "backup_create" | "backup_restore" | "refresh_citations") {
             let queue = if method == "list_papers_page" { &read_tx } else { &heavy_tx };
             if let Err(error) = queue.try_send(request) {
                 let request = match error {
@@ -228,6 +230,10 @@ fn dispatch(lib: &Arc<Library>, method: &str, params: &Value) -> Result<Value> {
             lib.set_tags(&param_str(params, "paper_id")?, tags)?;
             Ok(json!({"ok": true}))
         }
+        "save_category" => organization::folder_save(lib,params),
+        "bulk_assign" => organization::bulk_assign(lib,params),
+        "set_short_note" => organization::short_note(lib,params),
+        "refresh_citations" => citations::refresh(lib,params),
         "add_category" => lib.add_category(&param_str(params, "name")?),
         "list_annotations" => Ok(Value::Array(lib.list_annotations(&param_str(params, "paper_id")?)?)),
         "add_annotation" => lib.add_annotation(
@@ -279,6 +285,13 @@ fn dispatch(lib: &Arc<Library>, method: &str, params: &Value) -> Result<Value> {
             )?;
             Ok(json!({"ok": true}))
         }
+        "document_text_status" => {
+            let paper=param_str(params,"paper_id")?;let version=param_str(params,"version_id")?;
+            let conn=lib.conn();
+            let pages:i64=conn.query_row("SELECT pages FROM versions WHERE id=? AND paper_id=?",rusqlite::params![version,paper],|r|r.get(0))?;
+            let indexed:i64=conn.query_row("SELECT count(DISTINCT page) FROM blocks WHERE paper_id=? AND version_id=? AND length(trim(text))>0",rusqlite::params![paper,version],|r|r.get(0))?;
+            Ok(json!({"pages":pages,"indexed_pages":indexed}))
+        }
         "blocks" => Ok(Value::Array(lib.blocks(
             &param_str(params, "paper_id")?,
             &param_str(params, "version_id")?,
@@ -317,6 +330,7 @@ fn dispatch(lib: &Arc<Library>, method: &str, params: &Value) -> Result<Value> {
                     params.get("page").and_then(|v| v.as_i64()),
                     params.get("kind").and_then(|v| v.as_str()).unwrap_or("explain"),
                     params.get("version_id").and_then(Value::as_str),
+                    params.get("scope").and_then(Value::as_str).unwrap_or("related"),
                 )
             }
         }

@@ -16,6 +16,7 @@ try{
  execFileSync(process.env.MOONLIGHT_PYTHON||'python',['-c','import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])',manifest.archive,temp]);
  const installed=path.join(temp,'Moonlight-win32-x64');
  const entries=listPackage(path.join(installed,'resources/app.asar'));
+ for(const asset of ['worker.min.js','eng.traineddata.gz','chi_sim.traineddata.gz','tesseract-core-lstm.wasm'])assert(entries.some(p=>p.endsWith('/dist/ocr/'+asset)),`Missing offline OCR asset: ${asset}`);
  assert(entries.every(p=>!/(node_modules|\.env|auth\.json|library\.db|sync-credentials)/.test(p)));
  const env={...process.env};for(const k of Object.keys(env))if(k.startsWith('MOONLIGHT_'))delete env[k];
  Object.assign(env,{MOONLIGHT_USER_DATA:path.join(temp,'profile'),MOONLIGHT_LIBRARY:path.join(temp,'library')});
@@ -30,6 +31,17 @@ try{
  await page.getByRole('button',{name:'保存资料',exact:true}).click();await page.locator('.paper-title').filter({hasText:'Windows packaged test'}).waitFor();
  report.steps.push('Native file chooser, import, metadata, notes and tags');
  await page.locator('.paper-title').click();await page.locator('.pane-source canvas[data-rendered="true"]').first().waitFor();report.steps.push('PDF.js renders through file protocol and native IPC');
+ // Forced OCR also verifies the bundled worker, local protocol, WASM and languages.
+ await page.getByRole('button',{name:'OCR 当前页',exact:true}).click();
+ await page.getByText('解析完成；空白页或无法识别的页面可能没有正文',{exact:true}).waitFor({timeout:150000});
+ const ocr=await page.evaluate(async()=>{
+   const papers=await window.moonlight.call('list_papers');
+   const paper=await window.moonlight.call('get_paper',{paper_id:papers[0].id});
+   return window.moonlight.call('blocks',{paper_id:paper.id,version_id:paper.versions.find(v=>v.kind==='source').id,page:0});
+ });
+ assert(ocr.some(b=>b.kind==='ocr'&&/attention/i.test(b.text)));
+ await page.locator('.textLayer span[data-ocr="true"]').first().waitFor();
+ report.steps.push('Bundled offline OCR renders a selectable text layer and persists recognized evidence');
  // Uses the bundled official App Server, reads its isolated signed-out account only.
  // Never opens OAuth or sends a paper/model request in CI.
  const account=await page.evaluate(()=>window.moonlight.aiAction('status'));

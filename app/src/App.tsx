@@ -1,10 +1,14 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Library from "./Library";
+import FolderTree from './FolderTree';
+import FolderManager from './FolderManager';
+import OrganizePapers from './OrganizePapers';
 import TaxonomyList from "./TaxonomyList";
 import ZoteroCollections from "./ZoteroCollections";
 import CloudSync from './CloudSync';
 import AiSettings from './AiSettings';
+import TranslationSettings from './TranslationSettings';
 import PaperEditor from './PaperEditor';
 import TaskCenter from './TaskCenter';
 import BackupSettings from './BackupSettings';
@@ -37,6 +41,7 @@ export default function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [editPaper,setEditPaper]=useState<Paper|null>(null);
+  const [showFolders,setShowFolders]=useState(false),[organizeIds,setOrganizeIds]=useState<string[]|null>(null);
   const [showTasks,setShowTasks]=useState(false);
   const [zotero, setZotero] = useState<{ open: boolean; probe: any; busy: boolean; report: any; selected: string[]; copy: boolean; dataDir:string; linkedBase:string }>({
     open: false,
@@ -218,8 +223,8 @@ export default function App() {
           ))}
         </nav>
         <div className="nav-section">
-          <div className="nav-title">分类</div>
-          <TaxonomyList items={taxonomy.categories} label="论文分类"
+          <div className="nav-title folder-heading"><span>目录</span><button className="btn tiny ghost" onClick={()=>setShowFolders(true)}>新建 / 管理</button></div>
+          <FolderTree items={taxonomy.categories}
             selected={filter.kind === "category" ? filter.id : undefined}
             onSelect={(id,name)=>changeFilter({kind:"category",id,name})} />
         </div>
@@ -271,6 +276,10 @@ export default function App() {
             onPurge={purge}
             onExport={exportPaper}
             onEdit={p=>{void api.getPaper(p.id).then(setEditPaper).catch(e=>setToast(e.message));}}
+            onOrganize={ids=>setOrganizeIds(ids)}
+            onShortNote={async(p,text)=>{await api.setShortNote(p.id,text,p.updated_at);await reload();}}
+            onRefreshCitations={async (id,force)=>{const result=await api.refreshCitations(id,force);await client.invalidateQueries({queryKey:['papers']});return result.cached;}}
+            onTag={name=>changeFilter({kind:'tag',name})}
             onZotero={openZotero}
             importing={importing}
             importProgress={importProgress}
@@ -280,6 +289,8 @@ export default function App() {
 
       <button className="btn task-center-button" onClick={()=>setShowTasks(true)}>任务中心</button>
       {showTasks&&<TaskCenter onClose={()=>setShowTasks(false)} onOpen={id=>{void api.getPaper(id).then(p=>{setOpenPaper(p);setShowTasks(false);}).catch(e=>setToast(e.message));}}/>}
+      {showFolders&&<FolderManager items={taxonomy.categories} onChanged={reload} onClose={()=>setShowFolders(false)}/>}
+      {organizeIds&&<OrganizePapers ids={organizeIds} categories={taxonomy.categories} tags={taxonomy.tags} onSaved={reload} onClose={()=>setOrganizeIds(null)}/>}
       {editPaper&&<PaperEditor paper={editPaper} onClose={()=>setEditPaper(null)} onSaved={p=>{setEditPaper(null);updatePaper(p);void reload();}}/>}
       {toast && <div className="toast">{toast}</div>}
 
@@ -364,10 +375,11 @@ export default function App() {
               <dt>PDF 翻译模型</dt>
               <dd>{info?.model}</dd>
               <dt>凭据</dt>
-              <dd>{info?.credentialConfigured ? "已配置（仅主进程/服务进程可见）" : "未配置 API：可在下方登录 Codex 使用论文问答"}</dd>
+              <dd>{info?.credentialConfigured ? "已配置（仅主进程/服务进程可见）" : "未配置 API：请在下方填写翻译 API，或登录 Codex 使用论文问答"}</dd>
               <dt>离线能力</dt>
               <dd>导入、分类、检索、原文阅读、批注与导出不依赖网络</dd>
             </dl>
+            <TranslationSettings/>
             <BackupSettings/>
             <AiSettings/>
             <CloudSync onChanged={refreshCloud}/>

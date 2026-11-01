@@ -151,7 +151,10 @@ class Migration(unittest.TestCase):
         self.assertEqual(len(full['versions']),3)
         self.assertIn('First paragraph\nSecond & paragraph',full['notes'])
         self.assertEqual(full['doi'],'10.1234/example')
-        self.assertIn('Research / Child',[c['name'] for c in full['categories']])
+        child=next(c for c in full['categories'] if c['name']=='Child')
+        taxonomy=self.call('list_taxonomy')['categories']
+        parent=next(c for c in taxonomy if c['id']==child['parent_id'])
+        self.assertEqual(parent['name'],'Research')
         anns=self.call('list_annotations',paper_id=paper['id'])
         self.assertEqual(len(anns),2)
         self.assertEqual(len({a['version_id'] for a in anns}),2)

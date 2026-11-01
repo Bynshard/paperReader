@@ -1,0 +1,38 @@
+{
+  "date": "2026-11-01",
+  "overall": "partial_pass",
+  "platform": "Linux x64; Windows package not tested in this acceptance run",
+  "automated": {
+    "rust_passed": 20,
+    "rust_ignored": 1,
+    "react_passed": 27,
+    "node_passed": 17,
+    "pipeline_steps_passed": 11,
+    "cloud_sync_passed": 8
+  },
+  "desktop": {
+    "steps_passed": 14,
+    "page_errors": 0,
+    "real_offline_ocr": true,
+    "image_only_pdf_auto_ocr": true,
+    "ai_and_translation_engines": "loopback model and fake BabelDOC; quality not assessed"
+  },
+  "performance": {
+    "fixture": "10000 valid PDFs: 9998 generated and 2 real; reused disk fixture, 401378 indexed blocks; warm OS cache",
+    "common_search_p95_ms": 491.316,
+    "common_search_budget_ms": 200,
+    "passed": false
+  },
+  "remaining": [
+    "High-hit-rate full-text search exceeds 200ms P95 target",
+    "Live citation provider verification timed out; cache and identifier unit tests pass",
+    "New Windows packaged build and Windows credentials store not exercised",
+    "No live Codex paid inference, model-quality or new full-document translation quality validation"
+  ],
+  "fixes": [
+    "Use stable accessible label in search regression tests",
+    "Provide parsePage in reader test double",
+    "Prioritize relevant passages and neighboring text before prompt budget; filter question stop words"
+  ],
+  "published": false
+}

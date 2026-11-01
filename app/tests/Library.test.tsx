@@ -26,3 +26,33 @@ describe('virtual paper library',()=>{
     expect(p.onOffset).toHaveBeenCalledWith(100);
   });
 });
+
+describe('library organization controls',()=>{
+  it('selects the current page for classification and edits a short note without opening a PDF',async()=>{
+    const first={...paper(1),short_note:'旧速记',citation_count:0,citation_source:'Crossref'},second=paper(2);
+    const p={...props([first,second]),onOrganize:vi.fn(),onShortNote:vi.fn().mockResolvedValue(undefined)};
+    render(<Library {...p}/>);
+    fireEvent.click(screen.getByRole('button',{name:'卡片',exact:true}));
+    await screen.findByText('Paper 1');
+    fireEvent.click(screen.getByLabelText('选择当前页论文'));
+    fireEvent.click(screen.getAllByRole('button',{name:'分类 / 标签',exact:true})[0]);expect(p.onOrganize).toHaveBeenCalledWith(['1','2']);
+    fireEvent.click(screen.getAllByRole('button',{name:'速记',exact:true})[0]);
+    fireEvent.change(screen.getByLabelText('一句话速记 Paper 1'),{target:{value:'一句话记住关键贡献'}});fireEvent.click(screen.getByRole('button',{name:'保存速记'}));
+    await waitFor(()=>expect(p.onShortNote).toHaveBeenCalledWith(expect.objectContaining({id:'1',updated_at:1}),'一句话记住关键贡献'));
+    expect(p.onOpen).not.toHaveBeenCalled();expect(screen.getByText(/引用 0/)).toBeTruthy();expect(screen.getByText('引用量未知')).toBeTruthy();
+  });
+});
+
+describe('Style-inspired table view',()=>{
+  it('sorts via the server callback and persists visible columns and display mode',async()=>{
+    const p={...props([paper(0),paper(1)]),onOrganize:vi.fn(),onShortNote:vi.fn()};
+    render(<Library {...p}/>);
+    await screen.findByRole('table',{name:'论文增强列表'});
+    fireEvent.click(screen.getByRole('button',{name:'引用量',exact:true}));expect(p.onSort).toHaveBeenCalledWith('citations');
+    fireEvent.click(screen.getByRole('button',{name:'显示列',exact:true}));
+    const checkbox=screen.getByRole('checkbox',{name:'一句话速记',exact:true});fireEvent.click(checkbox);
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('moonlight-library-columns-v1')||'{}').visibility.short_note).toBe(false));
+    expect(screen.queryByRole('columnheader',{name:'一句话速记'})).toBeNull();
+    fireEvent.click(screen.getByRole('button',{name:'卡片',exact:true}));await waitFor(()=>expect(localStorage.getItem('moonlight-library-view-v1')).toBe('cards'));
+  });
+});

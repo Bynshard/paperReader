@@ -1,5 +1,5 @@
 {
-  "tests": 7,
+  "tests": 8,
   "transport": "real rclone with authenticated loopback WebDAV and Moto S3",
   "results": {
     "s3": {

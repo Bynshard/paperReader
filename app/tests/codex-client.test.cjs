@@ -58,3 +58,15 @@ test('unreadable settings block inference until explicitly repaired, preferences
  await assert.rejects(svc.run({kind:'ask'}),/设置无法读取/);assert.equal(calls,0);
  await svc.configure({provider:'api',model:''});await svc.run({kind:'ask'});assert.equal(calls,1);
 });
+
+test('context preview includes only current-version history and supports explicitly disabling history without model calls',async t=>{
+ const {dir,client}=fixture(t);let historyReads=0;
+ const svc=createAiService({directory:dir,client,emit:()=>{},openExternal:()=>{},call:async(method)=>{
+   if(method==='ai_prepare')return {prompt:'local evidence',sources:[{version_id:'v'}],context_info:{version_id:'v'}};
+   if(method==='ai_history'){historyReads++;return [{question:'current',answer:'current answer',sources:[{version_id:'v'}]},{question:'other',answer:'other answer',sources:[{version_id:'other'}]}];}
+   throw new Error(method);
+ }});
+ await svc.configure({provider:'codex',model:''});
+ const preview=await svc.preview({paper_id:'p',kind:'ask'});assert.equal(preview.history_count,1);assert.match(preview.history,/current/);assert.doesNotMatch(preview.history,/other/);assert.equal(client.child,null);
+ const disabled=await svc.preview({paper_id:'p',kind:'ask',include_history:false});assert.equal(disabled.history_count,0);assert.equal(historyReads,1);assert.equal(client.child,null);
+});
