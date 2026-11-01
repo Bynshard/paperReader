@@ -105,6 +105,7 @@ jobs:
     runs-on: windows-2025
     permissions:
       contents: write
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
