@@ -62,7 +62,7 @@ async function main() {
       ...summaryOf(row),
       abstract: 'We present a unified system design for large-model training and inference on heterogeneous clusters. Our approach combines 3D parallelism with memory-aware scheduling, reducing peak GPU memory by 41% while keeping throughput within 3% of a hand-tuned baseline.',
       notes: '迁移笔记：重点看 4.2 节的显存剖析与附录 A 的消融实验。',
-      versions: [{ id: 'v1', paper_id: row.id, kind: 'source', sha256: 'x', rel_path: `${row.id}.pdf`, pages: 3, bytes: pdf.length, lang: 'en', created_at: Date.now() }],
+      versions: [{ id: 'v1', paper_id: row.id, kind: 'source', sha256: 'x', rel_path: `${row.id}.pdf`, pages: 3, bytes: pdf.length, lang: 'en', created_at: Date.now() }, { id: 'v2', paper_id: row.id, kind: 'translated', sha256: 'y', rel_path: `${row.id}-zh.pdf`, pages: 3, bytes: pdf.length, lang: 'zh', created_at: Date.now() + 1, source_version_id: 'v1' }],
     });
     const send = (method, params) => {
       switch (method) {
@@ -78,7 +78,7 @@ async function main() {
         case 'list_annotations': return Promise.resolve([]);
         case 'zotero_files': return Promise.resolve([]);
         case 'document_text_status': return Promise.resolve({ indexed_pages: 1, pages: 3 });
-        case 'blocks': return Promise.resolve([]);
+        case 'blocks': return Promise.resolve(params.version_id === 'v2' ? [{ id: 't1', page: params.page, block_index: 0, kind: 'text', bbox: [60, 76, 470, 112], text: '译文第一段：显存瓶颈的三种解法。' }, { id: 't2', page: params.page, block_index: 1, kind: 'text', bbox: [60, 116, 470, 152], text: '译文第二段：分层 KV Cache 淘汰。' }] : [{ id: 's1', page: params.page, block_index: 0, kind: 'text', bbox: [60, 80, 470, 112], text: 'First paragraph on memory bottlenecks.' }, { id: 's2', page: params.page, block_index: 1, kind: 'text', bbox: [60, 120, 470, 152], text: 'Second paragraph on hierarchical KV eviction.' }]);
         case 'export': return Promise.resolve({ text: '@article{moonlight, title={HybridFlow}}' });
         case 'list_duplicates': return Promise.resolve({ count: 2, groups: [
           { kind: 'doi', key: '10.48550/arXiv.2409.19256', paper_ids: ['p1', 'p4'], count: 2 },
@@ -175,7 +175,17 @@ async function main() {
 
   await page.dblclick('.paper-table-row .paper-title');
   await page.waitForSelector('canvas[data-rendered="true"]', { timeout: 25000 });
+  await page.waitForSelector('.pane-translated canvas[data-rendered="true"]', { timeout: 25000 });
+  await page.waitForTimeout(900);
   await shot('05-reader');
+  const box = await page.locator('.pane-source .page-holder').first().boundingBox();
+  if (box) {
+    await page.mouse.move(box.x + 100 * 1.15, box.y + 90 * 1.15);
+    await page.mouse.down();
+    await page.mouse.up();
+  }
+  await page.waitForSelector('.alignment-focus', { timeout: 8000 }).catch(() => undefined);
+  await shot('18-reader-alignment');
   await page.click('button[aria-label="目录与页面导航"]');
   await page.waitForSelector('.reader-nav');
   await shot('06-reader-outline');
