@@ -61,20 +61,31 @@ def fetch(url: str) -> bytes:
 
 
 def find_uv() -> Path:
-    found = shutil.which('uv') or shutil.which('uv.exe')
-    if found:
-        return Path(found)
+    # Do not trust an arbitrary `uv` shim on the runner PATH: Windows runners can
+    # expose a Store/alias entry that CreateProcess rejects with WinError 5.
     target = ROOT / 'tools/uv-build'
     target.mkdir(parents=True, exist_ok=True)
     subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--quiet', '--upgrade', '--target', str(target), 'uv'])
     candidates = [target / 'uv.exe', target / 'Scripts/uv.exe', target / 'bin/uv', target / 'uv']
     for candidate in candidates:
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
-    for candidate in target.rglob('uv*'):
-        if candidate.is_file() and candidate.suffix.lower() in ('', '.exe'):
+    for candidate in target.rglob('uv*.exe'):
+        if candidate.is_file():
             return candidate
     raise RuntimeError('无法准备 uv（用于交叉安装 Windows wheels）')
+
+
+def run_uv(uv: Path, args: list[str]) -> None:
+    last = None
+    for attempt in range(3):
+        try:
+            subprocess.check_call([str(uv), *args])
+            return
+        except PermissionError as error:  # antivirus may briefly lock the fresh exe
+            last = error
+            time.sleep(1 + attempt)
+    raise RuntimeError(f'无法启动 uv（{uv}）：{last}')
 
 
 def patch_launcher_runtime(runtime: Path) -> None:
@@ -183,8 +194,9 @@ def main() -> int:
     site.mkdir(parents=True)
     print(f'安装 BabelDOC {BABELDOC_VERSION} 的 Windows/Python 3.13 依赖闭包…')
     uv = find_uv()
-    subprocess.check_call([
-        str(uv), 'pip', 'install',
+    print(f'使用 uv：{uv}')
+    run_uv(uv, [
+        'pip', 'install',
         '--target', str(site),
         '--python-platform', 'windows',
         '--python-version', '3.13',
