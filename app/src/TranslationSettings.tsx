@@ -50,7 +50,7 @@ export default function TranslationSettings() {
       <label>模型 ID<input aria-label="翻译模型 ID" placeholder="填写服务提供的准确模型 ID" value={settings.model} onChange={(e) => change("model", e.target.value)} /></label>
       <label>翻译 QPS<input aria-label="翻译 QPS" type="number" min="1" max="20" value={settings.qps} onChange={(e) => change("qps", Number(e.target.value))} /></label>
       <label>BabelDOC 可执行文件（可选）<input aria-label="BabelDOC 路径" value={settings.babeldoc} placeholder="留空则从系统 PATH 查找 babeldoc" onChange={(e) => change("babeldoc", e.target.value)} /></label>
-      <p className="small muted">Windows 便携包未内置 BabelDOC。请安装 Python 3.10–3.12 后执行 <code>pip install babeldoc</code>，再选择虚拟环境中的 <code>Scripts\babeldoc.exe</code>；若已加入 PATH 可留空。保存后立即生效，可先点“检查 BabelDOC”确认版本。</p>
+      <p className="small muted">Windows 便携包已内置 BabelDOC（含 Python 运行时），无需另行安装；首次翻译会自动下载版式模型与字体（约 100–200MB，之后离线可复用）。仅在需要自定义版本/排障时，才填写外部 <code>babeldoc.exe</code> 路径。</p>
       <div className="actions">
         <button className="btn" disabled={busy} onClick={() => void api.translationAction("pickBabeldoc").then((p) => { if (p) change("babeldoc", String(p)); }).catch((e) => setError(e.message))}>选择 BabelDOC</button>
         <button className="btn" disabled={busy || checking === "api"} onClick={() => void testApi()}>{checking === "api" ? <Loader2 className="spin" size={14} /> : <PlugZap size={14} />}测试 API 连接</button>

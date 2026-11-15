@@ -31,6 +31,12 @@ try{
    }
    await fs.copyFile(path.join(root,'tools/windows/SOURCES.json'),path.join(bin,'SOURCES.json'));
    for(const required of ['codex-app-server.exe','rclone.exe'])await fs.access(path.join(bin,required));
+   // Self-contained BabelDOC runtime (embedded Python + pinned wheels + launcher).
+   const babeldoc=path.join(root,'tools/windows/babeldoc');
+   const manifest=JSON.parse(await fs.readFile(path.join(babeldoc,'MANIFEST.json'),'utf8'));
+   if(manifest.component!=='babeldoc'||manifest.platform!=='win32-x64')throw new Error('Invalid BabelDOC runtime manifest');
+   for(const required of ['babeldoc.exe','babeldoc_cli.py','runtime/python.exe','runtime/Lib/site-packages/babeldoc/main.py'])await fs.access(path.join(babeldoc,required));
+   await fs.cp(babeldoc,path.join(bin,'babeldoc'),{recursive:true});
  }else await fs.copyFile(path.join(root,'tools/rclone/rclone'),path.join(bin,'rclone'));
  await fs.chmod(path.join(bin,coreFile),0o755);if(!windows)await fs.chmod(path.join(bin,'rclone'),0o755);
  const electronVersion=JSON.parse(await fs.readFile(path.join(root,'app/node_modules/electron/package.json'),'utf8')).version;

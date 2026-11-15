@@ -29,7 +29,10 @@ def main():
             if p.is_absolute() or '..' in p.parts or not name.startswith(prefix):
                 raise RuntimeError('Unsafe archive member: ' + name)
         required = ['moonlight.exe', 'resources/app.asar', 'resources/bin/moonlight-core.exe',
-                    'resources/bin/rclone.exe', 'resources/bin/codex-app-server.exe', 'README.md']
+                    'resources/bin/rclone.exe', 'resources/bin/codex-app-server.exe',
+                    'resources/bin/babeldoc/babeldoc.exe', 'resources/bin/babeldoc/babeldoc_cli.py',
+                    'resources/bin/babeldoc/runtime/python.exe',
+                    'resources/bin/babeldoc/runtime/Lib/site-packages/babeldoc/main.py', 'README.md']
         for name in required:
             data = package.read(prefix + name)
             if name.endswith('.exe') and not windows_x64(data):
@@ -42,10 +45,14 @@ def main():
     directory = Path(manifest['directory'])
     core = subprocess.check_output([str(directory/'resources/bin/moonlight-core.exe'), '--version'], text=True, encoding='utf-8', timeout=20).strip()
     rclone = subprocess.check_output([str(directory/'resources/bin/rclone.exe'), '--version'], text=True, encoding='utf-8', timeout=20).splitlines()[0]
+    babeldoc_exe = directory/'resources/bin/babeldoc/babeldoc.exe'
+    babeldoc_version = subprocess.check_output([str(babeldoc_exe), '--version'], text=True, encoding='utf-8', timeout=120).strip()
+    if '0.6.2' not in babeldoc_version:
+        raise RuntimeError('Bundled BabelDOC version mismatch: ' + babeldoc_version)
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT/'package.json').write_text(json.dumps(dict(completed=True, archive=str(archive),
-        sha256=digest, core=core, rclone=rclone, members_checked=required), indent=2), encoding='utf-8')
-    print('Verified Windows ZIP and bundled native executables')
+        sha256=digest, core=core, rclone=rclone, babeldoc=babeldoc_version, members_checked=required), indent=2), encoding='utf-8')
+    print('Verified Windows ZIP and bundled native executables (BabelDOC included)')
 
 
 if __name__ == '__main__':

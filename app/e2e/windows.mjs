@@ -25,6 +25,10 @@ try{
  page=await app.firstWindow();page.setDefaultTimeout(30000);page.on('pageerror',error=>report.page_errors.push(error.message));
  await page.getByRole('heading',{name:'论文库',exact:true}).waitFor();
  assert.equal(await app.evaluate(({app})=>app.isPackaged),true);report.steps.push('Actual extracted Windows EXE starts');
+ const bundledBabeldoc=await page.evaluate(()=>window.moonlight.call('check_babeldoc',{}));
+ assert.equal(bundledBabeldoc.ok,true,bundledBabeldoc.error);
+ assert.match(bundledBabeldoc.path||'',/babeldoc[\\/]/i);
+ assert.match(bundledBabeldoc.version||'',/0\.6\.2/);report.steps.push('Bundled BabelDOC runtime reports its version (no system Python needed)');
  await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});},path.join(output,'fixture.pdf'));
  await page.getByRole('button',{name:'导入 PDF',exact:true}).first().click();await page.locator('.paper-row').waitFor();
  await page.locator('button[aria-label^="更多操作"]').first().click();await page.getByRole('button',{name:'编辑资料',exact:true}).click();

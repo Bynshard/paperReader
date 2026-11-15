@@ -16,8 +16,11 @@ release/
 tools/windows/*.exe
 tools/windows/*.dll
 
-# Local credentials, caches and generated validation payloads
+// Local credentials, caches and generated validation payloads
 .babeldoc-home/
+tools/windows/babeldoc/
+tools/uv-build/
+tools/uv-cache/
 .env.*
 !.env.example
 artifacts/scratch/

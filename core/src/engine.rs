@@ -389,23 +389,38 @@ pub fn babeldoc_executable(configured: Option<&str>) -> Result<PathBuf> {
             path.display()
         ),
         Some(path) => format!("BabelDOC 不可执行：{}（请检查文件权限）", path.display()),
-        None => "未找到 BabelDOC，无法进行全文翻译：请先安装 BabelDOC（pip install babeldoc），再在 设置 → 翻译引擎 指定 babeldoc 可执行文件，或把它加入 PATH。".to_string(),
+        None => "未找到 BabelDOC，无法进行全文翻译：当前安装包缺少内置 BabelDOC 运行时，请重新下载完整安装包；或在 设置 → 翻译引擎 指定外部 babeldoc 可执行文件。".to_string(),
     };
     Err(anyhow!(message))
 }
 
-/// Locate the BabelDOC executable (env override, then the bundled venv, then PATH).
+/// Locate the BabelDOC executable.
+///
+/// Priority: `MOONLIGHT_BABELDOC_BIN` > bundled portable runtime (packaged
+/// `resources/bin/babeldoc` or a repo `tools/windows/babeldoc` build) > the
+/// development `.venv` > `PATH`.
 pub fn babeldoc_bin() -> PathBuf {
     if let Ok(p) = std::env::var("MOONLIGHT_BABELDOC_BIN") {
-        return PathBuf::from(p);
+        let value = PathBuf::from(p);
+        if value.exists() {
+            return value;
+        }
     }
     let root = std::env::var("MOONLIGHT_ROOT").unwrap_or_else(|_| ".".into());
-    let candidate = Path::new(&root).join(if cfg!(windows){".venv/Scripts/babeldoc.exe"}else{".venv/bin/babeldoc"});
-    if candidate.exists() {
-        candidate
-    } else {
-        PathBuf::from("babeldoc")
+    if let Some(found) = bundled_babeldoc(Path::new(&root)) {
+        return found;
     }
+    PathBuf::from("babeldoc")
+}
+
+fn bundled_babeldoc(root: &Path) -> Option<PathBuf> {
+    let binary = if cfg!(windows) { "babeldoc.exe" } else { "babeldoc" };
+    let candidates = [
+        root.join("bin").join("babeldoc").join(binary),
+        root.join("tools").join("windows").join("babeldoc").join(binary),
+        root.join(if cfg!(windows) { ".venv/Scripts/babeldoc.exe" } else { ".venv/bin/babeldoc" }),
+    ];
+    candidates.into_iter().find(|candidate| candidate.exists())
 }
 
 // ---- BabelDOC environment diagnostics --------------------------------------
@@ -445,7 +460,7 @@ pub fn check_babeldoc(requested: Option<&str>) -> Value {
         ),
         Some(path) if !path.exists() => format!("未找到 BabelDOC 可执行文件：{}", path.display()),
         Some(path) => format!("BabelDOC 不可执行：{}（请检查执行权限）", path.display()),
-        None => "未找到 BabelDOC：请安装 babeldoc（pip install babeldoc）或在设置中指定可执行文件路径".to_string(),
+        None => "未找到 BabelDOC：当前安装包缺少内置运行时，请重新下载完整安装包；或在设置中指定外部 babeldoc 可执行文件".to_string(),
     };
     json!({"ok": false, "error": error})
 }
@@ -508,7 +523,7 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 fn babeldoc_version(binary: &Path) -> Option<String> {
-    let output = run_capture(binary, &["--version"], Duration::from_secs(5)).ok()?;
+    let output = run_capture(binary, &["--version"], Duration::from_secs(15)).ok()?;
     let line = output
         .lines()
         .map(str::trim)
@@ -781,6 +796,22 @@ mod diagnostic_tests {
         let rejected = check_babeldoc(Some(&impostor_text));
         assert_eq!(rejected["ok"], json!(false), "{rejected}");
         assert!(rejected["error"].as_str().unwrap().contains("babeldoc"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn bundled_babeldoc_prefers_packaged_bin_then_repository_tools() {
+        let root = std::env::temp_dir().join(format!("moonlight-bundled-{}", uuid::Uuid::new_v4()));
+        let binary = if cfg!(windows) { "babeldoc.exe" } else { "babeldoc" };
+        let packaged = root.join("bin").join("babeldoc").join(binary);
+        std::fs::create_dir_all(packaged.parent().unwrap()).unwrap();
+        std::fs::write(&packaged, b"fixture").unwrap();
+        assert_eq!(bundled_babeldoc(&root), Some(packaged.clone()));
+        std::fs::remove_dir_all(root.join("bin")).unwrap();
+        let repo_tools = root.join("tools").join("windows").join("babeldoc").join(binary);
+        std::fs::create_dir_all(repo_tools.parent().unwrap()).unwrap();
+        std::fs::write(&repo_tools, b"fixture").unwrap();
+        assert_eq!(bundled_babeldoc(&root), Some(repo_tools));
         std::fs::remove_dir_all(&root).unwrap();
     }
 

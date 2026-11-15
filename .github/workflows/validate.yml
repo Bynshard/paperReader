@@ -55,6 +55,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/prepare_windows.py
+      - name: Prepare bundled BabelDOC runtime
+        run: python scripts/prepare_babeldoc.py
       - name: Native Windows library smoke
         run: python scripts/smoke_windows.py
       - name: Package Windows ZIP
