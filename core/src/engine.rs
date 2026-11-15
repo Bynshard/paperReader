@@ -577,7 +577,7 @@ fn run_capture(binary: &Path, args: &[&str], timeout: Duration) -> Result<String
 }
 
 /// Run one translation job.  Called on a background thread.
-pub fn run_translation(library: Arc<Library>, job_id: String, paper_id: String, source_path: PathBuf, pages: Option<String>) {
+pub fn run_translation(library: Arc<Library>, job_id: String, paper_id: String, source_path: PathBuf, pages: Option<String>, source_version_id: Option<String>) {
     let cancel = library.cancel_flag(&job_id);
     let result = (|| -> Result<PathBuf> {
         if cancel.load(Ordering::SeqCst){return Err(anyhow!("cancelled"));}
@@ -675,7 +675,7 @@ pub fn run_translation(library: Arc<Library>, job_id: String, paper_id: String, 
 
     match result {
         Ok(output) => {
-            match library.attach_translation(&paper_id, &output, &job_id) {
+            match library.attach_translation(&paper_id, &output, &job_id, source_version_id.as_deref()) {
                 Ok(_) => {},
                 Err(err) if cancel.load(Ordering::SeqCst)||err.to_string()=="cancelled" => library.set_job_status(&job_id,"cancelled",None,None),
                 Err(err) => library.set_job_status(&job_id, "failed", Some(&err.to_string()), None),

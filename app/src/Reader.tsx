@@ -4,7 +4,7 @@ import {
   Languages, Lightbulb, ListTree, Loader2, Menu, MessageSquareQuote, Minus, MoreHorizontal, MoveHorizontal, NotebookPen, PanelRightClose,
   PanelRightOpen, Pencil, Plus, RotateCcw, Search, Send, Sparkles, Square, Trash2, Undo2, Redo2, X,
 } from "lucide-react";
-import type { Annotation, ImportedAttachment, Paper, PdfBytes, Source } from "./types";
+import type { Annotation, Block, ImportedAttachment, Paper, PdfBytes, Source } from "./types";
 import PaperEditor from "./PaperEditor";
 import MarkdownAnswer from "./MarkdownAnswer";
 import DocumentParsing from "./DocumentParsing";
@@ -64,6 +64,11 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
     try { const saved = localStorage.getItem("moonlight-reader-zoom-mode"); return saved === "fit-width" || saved === "fit-page" ? saved : "custom"; } catch { return "custom"; }
   });
   useEffect(() => { try { localStorage.setItem("moonlight-reader-zoom-mode", zoomMode); } catch { /* ignore */ } }, [zoomMode]);
+  const [pageBlocks, setPageBlocks] = useState<{ page: number; source: Block[]; translated: Block[] } | null>(null);
+  const [aligned, setAligned] = useState<{ page: number; source?: number[]; translated?: number[] } | null>(null);
+  const blockCache = useRef(new Map<string, Block[]>());
+  const scrollToken = useRef(0);
+  const [translatedBlockRevision, setTranslatedBlockRevision] = useState(0);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [annotating, setAnnotating] = useState(false);
   const [activeAnnotation, setActiveAnnotation] = useState<{ annotation: Annotation; x: number; y: number } | null>(null);
@@ -182,18 +187,93 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
     setHistoryTick((tick) => tick + 1);
   };
   const translatedVersions = useMemo(() => paper.versions.filter((version) => version.kind === "translated").sort((a, b) => b.created_at - a.created_at), [paper.versions]);
-  const [translatedVersionId, setTranslatedVersionId] = useState<string | undefined>(() => translatedVersions[0]?.id);
-  const translatedVersion = translatedVersions.find((version) => version.id === translatedVersionId) ?? translatedVersions[0];
   const sourceVersions = useMemo(() => paper.versions.filter((version) => version.kind === "source").sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id)), [paper.versions]);
+  const translatedForSource = useMemo(() => translatedVersions.filter((version) => {
+    if (!source) return true;
+    return (version.source_version_id || sourceVersions[0]?.id) === source.versionId;
+  }), [translatedVersions, source?.versionId, sourceVersions]);
+  const [translatedVersionId, setTranslatedVersionId] = useState<string | undefined>(() => translatedVersions.find((version) => (version.source_version_id || sourceVersions[0]?.id) === sourceVersions[0]?.id)?.id);
+  const translatedVersion = translatedVersions.find((version) => version.id === translatedVersionId);
   useEffect(() => {
-    if (translatedVersions.length && !translatedVersions.some((version) => version.id === translatedVersionId)) setTranslatedVersionId(translatedVersions[0].id);
-  }, [translatedVersions, translatedVersionId]);
-  const isPrimary = !source || source.versionId === sourceVersions[0]?.id;
+    if (!source) return;
+    const match = translatedForSource[0];
+    setTranslatedVersionId(match?.id);
+    if (!match) { setTranslated(null); setMode((current) => current === "source" ? current : "source"); }
+  }, [source?.versionId, translatedForSource]);
   const loadOcr = useCallback(async (pageNumber: number) => source ? (await api.blocks(paper.id, source.versionId, pageNumber)).filter((block) => block.kind === "ocr") : [], [paper.id, source?.versionId]);
   const sourceAnnotations = useMemo(() => annotations.filter((annotation) => annotation.version_kind === "source" && (!annotation.version_id || annotation.version_id === source?.versionId)), [annotations, source?.versionId]);
   const translatedAnnotations = useMemo(() => annotations.filter((annotation) => annotation.version_kind === "translated" && (!annotation.version_id || annotation.version_id === translated?.versionId)), [annotations, translated?.versionId]);
 
   const loadTranslated = useCallback(async () => { if (!translatedVersion) return; setTranslated(await api.pdf(paper.id, "translated", translatedVersion.id)); }, [paper.id, translatedVersion]);
+
+  const loadBlocks = useCallback(async (versionId: string, pageNumber: number): Promise<Block[]> => {
+    const key = `${versionId}:${pageNumber}:${textRevision}:${translatedBlockRevision}`;
+    const cached = blockCache.current.get(key);
+    if (cached) return cached;
+    try {
+      const rows = await api.blocks(paper.id, versionId, pageNumber);
+      blockCache.current.set(key, rows);
+      return rows;
+    } catch { return []; }
+  }, [paper.id, textRevision, translatedBlockRevision]);
+
+  useEffect(() => {
+    let alive = true;
+    setAligned(null);
+    if (mode !== "dual" || !source || !translated) { setPageBlocks(null); return; }
+    const pageIndex = page - 1;
+    void Promise.all([loadBlocks(source.versionId, pageIndex), loadBlocks(translated.versionId, pageIndex)]).then(([sourceBlocks, translatedBlocks]) => {
+      if (alive) setPageBlocks({ page, source: sourceBlocks, translated: translatedBlocks });
+    });
+    return () => { alive = false; };
+  }, [mode, page, source?.versionId, translated?.versionId, loadBlocks, translatedBlockRevision]);
+
+  const syncScroll = (side: "source" | "translated", p: number, fraction: number) => {
+    remember(p, fraction);
+    if (mode !== "dual") return;
+    const token = ++scrollToken.current;
+    void (async () => {
+      const [sourceRows, translatedRows] = await Promise.all([
+        source ? loadBlocks(source.versionId, p - 1) : Promise.resolve([]),
+        translated ? loadBlocks(translated.versionId, p - 1) : Promise.resolve([]),
+      ]);
+      if (token !== scrollToken.current) return;
+      const fromApi = side === "source" ? sourceApi.current : transApi.current;
+      const toApi = side === "source" ? transApi.current : sourceApi.current;
+      const fromRows = side === "source" ? sourceRows : translatedRows;
+      const toRows = side === "source" ? translatedRows : sourceRows;
+      if (!fromApi || !toApi || fromRows.length === 0 || toRows.length === 0) { toApi?.goTo(p, fraction); return; }
+      const fromSize = fromApi.pageSize?.(p) ?? { w: 612, h: 792 };
+      const toSize = toApi.pageSize?.(p) ?? { w: 612, h: 792 };
+      const fromBlock = nearestBlock(fromRows, fraction * fromSize.h);
+      if (!fromBlock) { toApi.goTo(p, fraction); return; }
+      const center = (fromBlock.bbox[1] + fromBlock.bbox[3]) / 2 / fromSize.h;
+      const target = nearestBlock(toRows, center * toSize.h);
+      const targetFraction = target ? (target.bbox[1] + target.bbox[3]) / 2 / toSize.h : fraction;
+      // Differing pagination makes the nearest-paragraph heuristic unreliable.
+      toApi.goTo(p, Math.abs(targetFraction - fraction) > 0.35 ? fraction : targetFraction);
+    })();
+  };
+
+  const alignPoint = (side: "source" | "translated", point: { page: number; x: number; y: number } | null, kind: "hover" | "click") => {
+    if (!point || !pageBlocks || pageBlocks.page !== point.page) { if (point || kind === "hover") setAligned(null); return; }
+    const fromRows = side === "source" ? pageBlocks.source : pageBlocks.translated;
+    const toRows = side === "source" ? pageBlocks.translated : pageBlocks.source;
+    const fromApi = side === "source" ? sourceApi.current : transApi.current;
+    const toApi = side === "source" ? transApi.current : sourceApi.current;
+    const block = blockAt(fromRows, point.x, point.y);
+    if (!block) { setAligned(null); return; }
+    const fromSize = fromApi?.pageSize?.(point.page) ?? { w: 612, h: 792 };
+    const toSize = toApi?.pageSize?.(point.page) ?? { w: 612, h: 792 };
+    const center = fromSize ? (block.bbox[1] + block.bbox[3]) / 2 / fromSize.h : 0;
+    const target = toSize ? nearestBlock(toRows, center * toSize.h) : null;
+    const targetCenter = target && toSize ? (target.bbox[1] + target.bbox[3]) / 2 / toSize.h : undefined;
+    const reliable = targetCenter !== undefined && Math.abs(targetCenter - center) <= 0.25;
+    const next = side === "source"
+      ? { page: point.page, source: block.bbox, translated: reliable ? target?.bbox : undefined }
+      : { page: point.page, translated: block.bbox, source: reliable ? target?.bbox : undefined };
+    setAligned((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -220,7 +300,8 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
   }, [paper]);
   useEffect(() => {
     let active = true;
-    if (translatedVersion) void api.pdf(paper.id, "translated", translatedVersion.id).then((bytes) => { if (active) { setTranslated(bytes); setMode((current) => current === "source" ? "dual" : current); } }).catch(() => undefined);
+    if (!translatedVersion) { setTranslated(null); return; }
+    void api.pdf(paper.id, "translated", translatedVersion.id).then((bytes) => { if (active) { setTranslated(bytes); setMode((current) => current === "source" ? "dual" : current); } }).catch(() => undefined);
     return () => { active = false; };
   }, [paper.id, translatedVersion?.id]);
 
@@ -255,9 +336,9 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
         api.getPaper(paper.id).then(async (fresh) => {
           onChanged(fresh);
           if (fresh.versions.some((version) => version.kind === "translated")) {
-            const newest = fresh.versions.filter((version) => version.kind === "translated").sort((a, b) => b.created_at - a.created_at)[0];
-            if (newest) setTranslatedVersionId(newest.id);
-            setTranslated(await api.pdf(paper.id, "translated", newest?.id));
+            const newest = fresh.versions.filter((version) => version.kind === "translated" && (version.source_version_id || fresh.versions.find((row) => row.kind === "source")?.id) === source?.versionId).sort((a, b) => b.created_at - a.created_at)[0];
+            if (newest) { setTranslatedVersionId(newest.id); setTranslated(await api.pdf(paper.id, "translated", newest.id)); }
+            else setTranslated(null);
             setMode((current) => current === "source" ? "dual" : current);
           }
         });
@@ -378,7 +459,7 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
   const startTranslate = async (pages?: string) => {
     setShowTranslateMenu(false);
     try {
-      const { job_id } = await api.startTranslate(paper.id, pages);
+      const { job_id } = await api.startTranslate(paper.id, pages, source?.versionId);
       setJob({ id: job_id, status: "queued" });
       onToast(pages ? `开始翻译第 ${pages} 页` : "开始翻译全文（后台运行，可继续阅读）");
     } catch (e) {
@@ -531,14 +612,14 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
         {sourceVersions.length > 1 && <select className="select compact" aria-label="原文附件" value={source.versionId} onChange={(event) => chooseSource(event.target.value)}>
           {sourceVersions.map((version, index) => <option key={version.id} value={version.id}>{files.find((file) => file.version_id === version.id)?.title || `PDF ${index + 1}`}{index === 0 ? "（主文档）" : ""}</option>)}
         </select>}
-        {translatedVersions.length > 1 && <select className="select compact" aria-label="译文版本" value={translatedVersion?.id} onChange={(event) => chooseTranslatedVersion(event.target.value)}>
-          {translatedVersions.map((version, index) => <option key={version.id} value={version.id}>{`译文 ${index + 1}${index === 0 ? "（最新）" : ""} · ${new Date(version.created_at).toLocaleDateString()}`}</option>)}
+        {translatedForSource.length > 1 && <select className="select compact" aria-label="译文版本" value={translatedVersion?.id} onChange={(event) => chooseTranslatedVersion(event.target.value)}>
+          {translatedForSource.map((version, index) => <option key={version.id} value={version.id}>{`译文 ${index + 1}${index === 0 ? "（最新）" : ""} · ${new Date(version.created_at).toLocaleDateString()}`}</option>)}
         </select>}
         <DocumentParsing key={source.versionId} paperId={paper.id} versionId={source.versionId} pages={source.pages} page={page} pane={sourceApi} onIndexed={() => setTextRevision((value) => value + 1)} hasText={nativeText[page]} />
         <div className="mode-switch">
           <button className={mode === "source" ? "on" : ""} onClick={() => switchMode("source")}>原文</button>
-          <button className={mode === "translated" ? "on" : ""} disabled={!translated || !isPrimary} title={translated ? "" : "尚未生成译文"} onClick={() => switchMode("translated")}>译文</button>
-          <button className={mode === "dual" ? "on" : ""} disabled={!translated || !isPrimary} onClick={() => switchMode("dual")}>对照</button>
+          <button className={mode === "translated" ? "on" : ""} disabled={!translated} title={translated ? "" : "尚未生成译文"} onClick={() => switchMode("translated")}>译文</button>
+          <button className={mode === "dual" ? "on" : ""} disabled={!translated} onClick={() => switchMode("dual")}>对照</button>
         </div>
         <div className="page-nav">
           <button className="icon-btn" aria-label="上一页" onClick={() => navigate(Math.max(1, page - 1))}><ChevronLeft size={16} /></button>
@@ -564,10 +645,10 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
           <button className={zoomMode === "fit-width" ? "icon-btn on" : "icon-btn"} aria-label="一键适应页宽" title="适应页宽（Ctrl/Cmd+0）" onClick={() => setZoomMode("fit-width")}><MoveHorizontal size={15} /></button>
         </div>
         <div className="translate-wrap">
-          <button className="btn primary" title={!isPrimary ? "全文翻译当前使用主文档" : ""} onClick={() => (translated ? setShowTranslateMenu((value) => !value) : startTranslate(undefined))} disabled={!!job || !isPrimary}>
+          <button className="btn primary" title="翻译当前原文附件" onClick={() => (translated ? setShowTranslateMenu((value) => !value) : startTranslate(undefined))} disabled={!!job}>
             <Languages size={15} />{job ? phaseLabel(job) : translated ? "重新翻译" : "翻译全文"}
           </button>
-          {translated && <button className="icon-btn" aria-label="翻译选项" onClick={() => setShowTranslateMenu((value) => !value)} disabled={!!job || !isPrimary}><ChevronDown size={15} /></button>}
+          {translated && <button className="icon-btn" aria-label="翻译选项" onClick={() => setShowTranslateMenu((value) => !value)} disabled={!!job}><ChevronDown size={15} /></button>}
         </div>
         {job && <button className="btn tiny ghost" onClick={() => job && api.cancelJob(job.id)}><Square size={13} />取消</button>}
         <button className="icon-btn" aria-label={sideOpen ? "收起侧栏" : "展开侧栏"} title={sideOpen ? "收起侧栏" : "展开侧栏"} onClick={() => setSideOpen((value) => !value)}>{sideOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}</button>
@@ -586,12 +667,14 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
             <PdfPane key="source" bytes={source.bytes} scale={scale} annotations={sourceAnnotations}
               initialPage={page} initialFraction={positionRef.current.fraction} side="source" loadOcr={loadOcr} textRevision={textRevision} registerApi={registerSource}
               findMatches={activeSide === "source" ? findMatches : undefined} activeMatchIndex={activeSide === "source" ? findIndex : undefined}
+              alignedBox={aligned?.page === page && aligned.source ? { page, bbox: aligned.source } : null}
+              onParagraphPoint={(point, kind) => alignPoint("source", point, kind)}
               onNativeText={(index, hasText) => setNativeText((all) => all[index] === hasText ? all : { ...all, [index]: hasText })}
               onHighlightClick={(annotation, anchor) => { setActiveAnnotation({ annotation, ...anchor }); setAnnotationDraft(annotation.comment || ""); }}
               onAreaSelect={(selected) => { setSelection({ ...selected, quote: selected.quote || "（框选区域）" }); setAnnotating(true); }}
               onInternalLink={(target, fraction) => jumpTo(target, fraction)}
               onSelect={(selected) => { chooseActive("source"); setSelection(selected); setAnnotating(false); }}
-              onScrollFraction={(p, fraction) => { chooseActive("source"); remember(p, fraction); if (mode === "dual") transApi.current?.goTo(p, fraction); }}
+              onScrollFraction={(p, fraction) => { chooseActive("source"); syncScroll("source", p, fraction); }}
               onBlocks={(pageNo, blocks) => { if (blocks.length) api.setBlocks(paper.id, source.versionId, pageNo, blocks).catch(() => undefined); }}
             />
           )}
@@ -599,12 +682,14 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
             <PdfPane key="translated" bytes={translated.bytes} scale={scale} annotations={translatedAnnotations}
               initialPage={page} initialFraction={positionRef.current.fraction} side="translated" registerApi={registerTranslated}
               findMatches={activeSide === "translated" ? findMatches : undefined} activeMatchIndex={activeSide === "translated" ? findIndex : undefined}
+              alignedBox={aligned?.page === page && aligned.translated ? { page, bbox: aligned.translated } : null}
+              onParagraphPoint={(point, kind) => alignPoint("translated", point, kind)}
               onHighlightClick={(annotation, anchor) => { setActiveAnnotation({ annotation, ...anchor }); setAnnotationDraft(annotation.comment || ""); }}
               onAreaSelect={(selected) => { setSelection({ ...selected, quote: selected.quote || "（框选区域）" }); setAnnotating(true); }}
               onInternalLink={(target, fraction) => jumpTo(target, fraction)}
               onSelect={(selected) => { chooseActive("translated"); setSelection(selected); setAnnotating(false); }}
-              onScrollFraction={(p, fraction) => { chooseActive("translated"); remember(p, fraction); if (mode === "dual") sourceApi.current?.goTo(p, fraction); }}
-              onBlocks={(pageNo, blocks) => { if (blocks.length) api.setBlocks(paper.id, translated.versionId, pageNo, blocks).catch(() => undefined); }}
+              onScrollFraction={(p, fraction) => { chooseActive("translated"); syncScroll("translated", p, fraction); }}
+              onBlocks={(pageNo, blocks) => { if (blocks.length) api.setBlocks(paper.id, translated.versionId, pageNo, blocks).then(() => setTranslatedBlockRevision((value) => value + 1)).catch(() => undefined); }}
             />
           )}
         </div>
@@ -783,6 +868,31 @@ function SendIcon() {
 function zoomValue(scale: number, mode: "custom" | "fit-width" | "fit-page") {
   if (mode !== "custom") return mode;
   return [0.4, 0.5, 0.75, 1, 1.15, 1.25, 1.5, 2, 3, 4].includes(scale) ? String(scale) : "current";
+}
+
+function nearestBlock(blocks: Block[], targetY: number): Block | undefined {
+  let best: Block | undefined;
+  let distance = Number.POSITIVE_INFINITY;
+  for (const block of blocks) {
+    if (!Array.isArray(block.bbox) || block.bbox.length !== 4) continue;
+    const center = (Number(block.bbox[1]) + Number(block.bbox[3])) / 2;
+    const next = Math.abs(center - targetY);
+    if (next < distance) { distance = next; best = block; }
+  }
+  return best;
+}
+
+function blockAt(blocks: Block[], x: number, y: number): Block | undefined {
+  let best: Block | undefined;
+  let area = Number.POSITIVE_INFINITY;
+  for (const block of blocks) {
+    if (!Array.isArray(block.bbox) || block.bbox.length !== 4) continue;
+    const [left, top, right, bottom] = block.bbox.map(Number);
+    if (x < left || x > right || y < top || y > bottom) continue;
+    const next = (right - left) * (bottom - top);
+    if (next < area) { area = next; best = block; }
+  }
+  return best;
 }
 
 function statusLabel(status: string) {

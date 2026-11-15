@@ -23,6 +23,7 @@ export type PaneApi = {
   fit: (mode: "width" | "page") => number;
   prepareZoom?: (focal?: { clientX: number; clientY: number }) => void;
   thumbnail: (page: number, width?: number) => Promise<string>;
+  pageSize: (page: number) => { w: number; h: number };
 };
 type Props = {
   bytes: Uint8Array; scale: number; annotations: Annotation[];
@@ -47,6 +48,10 @@ type Props = {
   /** All in-document find hits (rendered as persistent highlights). */
   findMatches?: FindMatch[];
   activeMatchIndex?: number;
+  /** Natural-coordinate rectangle of an aligned paragraph in this pane. */
+  alignedBox?: { page: number; bbox: number[] } | null;
+  /** Report a paragraph point (natural PDF coordinates) on click/hover. */
+  onParagraphPoint?: (point: { page: number; x: number; y: number } | null, kind: "hover" | "click") => void;
 };
 
 type LinkBox = { left: number; top: number; width: number; height: number; url?: string; dest?: unknown };
@@ -109,7 +114,7 @@ function computeLinks(rawLinks: any[], viewport: pdfjsLib.PageViewport): LinkBox
   return boxes;
 }
 
-const PageView = memo(function PageView({ doc, index, scale, annotations, onSize, onBlocks, loadOcr, textRevision, focus, onNativeText, onHighlightClick, onLink, findHits, activeMatchIndex }: {
+const PageView = memo(function PageView({ doc, index, scale, annotations, onSize, onBlocks, loadOcr, textRevision, focus, onNativeText, onHighlightClick, onLink, findHits, activeMatchIndex, alignedBox }: {
   doc: pdfjsLib.PDFDocumentProxy; index: number; scale: number; annotations: Annotation[];
   onSize: (index: number, width: number, height: number) => void;
   onBlocks: (index: number, blocks: Block[]) => void;
@@ -121,6 +126,7 @@ const PageView = memo(function PageView({ doc, index, scale, annotations, onSize
   onLink?: (dest: unknown) => void;
   findHits?: { bbox: number[]; globalIndex: number }[];
   activeMatchIndex?: number;
+  alignedBox?: number[] | null;
 }) {
   const mount = useRef<HTMLDivElement>(null);
   const cacheRef = useRef<CachedPage | null>(null);
@@ -265,6 +271,7 @@ const PageView = memo(function PageView({ doc, index, scale, annotations, onSize
     <div className="highlightLayer">
       {annotations.flatMap((a) => a.rects.map((r, i) => <div key={`${a.id}:${i}`} className={`highlight ${a.color}`} title={a.comment || a.quote} onClick={(event) => { event.stopPropagation(); onHighlightClick?.(a, event.clientX, event.clientY); }} style={{ left: `${r.x * 100}%`, top: `${r.y * 100}%`, width: `${r.w * 100}%`, height: `${r.h * 100}%` }} />))}
       {findHits?.map((hit) => hit.bbox.length === 4 && <div key={`find-${hit.globalIndex}`} className={`find-hit ${activeMatchIndex === hit.globalIndex ? "on" : ""}`} style={{ left: hit.bbox[0] * scale, top: hit.bbox[1] * scale, width: Math.max(2, (hit.bbox[2] - hit.bbox[0]) * scale), height: Math.max(2, (hit.bbox[3] - hit.bbox[1]) * scale) }} />)}
+      {alignedBox && alignedBox.length === 4 && <div className="alignment-focus" style={{ left: alignedBox[0]*scale, top: alignedBox[1]*scale, width: (alignedBox[2]-alignedBox[0])*scale, height: (alignedBox[3]-alignedBox[1])*scale }} />}
       {focus && focus.length === 4 && <div className="evidence-focus" style={{ left: focus[0]*scale, top: focus[1]*scale, width: (focus[2]-focus[0])*scale, height: (focus[3]-focus[1])*scale }} />}
     </div>
   </>;
@@ -510,6 +517,10 @@ export default function PdfPane(props: Props) {
     const scale = mode === "width" ? width / size.w : Math.min(width / size.w, height / size.h);
     return Math.max(0.4, Math.min(4, Number(scale.toFixed(2))));
   }, [position]);
+  const pageSize = useCallback((pageNumber: number) => {
+    const size = sizes.current.get(Math.max(0, pageNumber - 1));
+    return size ? { w: size.w, h: size.h } : { w: state.current.natural.w, h: state.current.natural.h };
+  }, []);
   const thumbnails = useRef(new Map<string, string>());
   useEffect(() => { thumbnails.current.clear(); }, [bytes]);
   const thumbnail = useCallback(async (pageNumber: number, width = 148) => {
@@ -603,6 +614,29 @@ export default function PdfPane(props: Props) {
     pan.current = null;
     setPanning(false);
   };
+  const hoverTimer = useRef(0);
+  const paragraphPoint = (event: { clientX: number; clientY: number; target: EventTarget | null }) => {
+    const target = event.target as HTMLElement | null;
+    if (!target || target.closest("a,button,.highlight,.pdf-link")) return null;
+    const holder = target.closest<HTMLElement>(".page-holder");
+    if (!holder) return null;
+    const rect = holder.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return { page: Number(holder.dataset.page), x: (event.clientX - rect.left) / scale, y: (event.clientY - rect.top) / scale };
+  };
+  const handleParagraphUp = (event: React.MouseEvent) => {
+    if (event.altKey || pan.current) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && selection.toString().trim()) return;
+    const point = paragraphPoint(event);
+    if (point) latest.current.onParagraphPoint?.(point, "click");
+  };
+  const handleParagraphHover = (event: React.MouseEvent) => {
+    if (event.buttons || pan.current || area.current || !latest.current.onParagraphPoint) return;
+    const point = paragraphPoint(event);
+    window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = window.setTimeout(() => latest.current.onParagraphPoint?.(point, "hover"), 90);
+  };
   const area = useRef<{ page: number; x0: number; y0: number; bounds: DOMRect } | null>(null);
   const onAreaPointerDown = (event: ReactPointerEvent) => {
     if (!event.altKey || event.button !== 0) return;
@@ -643,9 +677,9 @@ export default function PdfPane(props: Props) {
   useEffect(() => {
     if (!doc) return;
     virtual.measure();
-    registerApi?.({ goTo, getPosition: position, parsePage, getOutline, find, fit, thumbnail, prepareZoom });
+    registerApi?.({ goTo, getPosition: position, parsePage, getOutline, find, fit, thumbnail, prepareZoom, pageSize });
     return () => registerApi?.(null);
-  }, [doc, scale, registerApi, goTo, position, virtual, parsePage, getOutline, find, fit, thumbnail, prepareZoom]);
+  }, [doc, scale, registerApi, goTo, position, virtual, parsePage, getOutline, find, fit, thumbnail, prepareZoom, pageSize]);
   useEffect(() => {
     if (doc) {
       goTo(latest.current.initialPage ?? 1, latest.current.initialFraction ?? 0);
@@ -680,7 +714,9 @@ export default function PdfPane(props: Props) {
   const userInput = () => { programmatic.current = false; };
   return <div className={`pane pane-${side}`}>
     <div className={`pane-scroll ${spacePan ? "grab" : ""} ${panning ? "grabbing" : ""}`} ref={scroll} onScroll={handleScroll}
-      onMouseUp={(event) => { if (!event.altKey) handleSelection(); }}
+      onMouseUp={(event) => { if (!event.altKey) { handleSelection(); handleParagraphUp(event); } }}
+      onMouseMove={handleParagraphHover}
+      onMouseLeave={() => { window.clearTimeout(hoverTimer.current); latest.current.onParagraphPoint?.(null, "hover"); }}
       onPointerEnter={() => { hover.current = true; }} onPointerLeave={() => { hover.current = false; }}
       onWheelCapture={userInput} onPointerDownCapture={userInput} onKeyDownCapture={userInput}
       onPointerDown={(event) => { onAreaPointerDown(event); onPanPointerDown(event); }}
@@ -696,7 +732,8 @@ export default function PdfPane(props: Props) {
             onSize={onSize} onBlocks={onBlocks} loadOcr={props.loadOcr} textRevision={props.textRevision} focus={focus?.page === item.index ? focus.bbox : undefined}
             onNativeText={onNativeText} onHighlightClick={onHighlightClick} onLink={resolveDest}
             findHits={props.findMatches?.map((match, globalIndex) => ({ ...match, globalIndex })).filter((match) => match.page === item.index + 1)}
-            activeMatchIndex={props.activeMatchIndex} />
+            activeMatchIndex={props.activeMatchIndex}
+            alignedBox={props.alignedBox?.page === item.index + 1 ? props.alignedBox.bbox : null} />
         </div>)}
       </div>
       {marquee && <div className="area-marquee" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }}><span>{marquee.page} 页 · 框选批注</span></div>}

@@ -335,6 +335,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .evidence-focus { position: absolute; border: 2px solid var(--accent); background: rgba(37, 99, 83, 0.12); }
 .find-hit { position: absolute; background: rgba(247, 206, 75, 0.42); border-radius: 2px; pointer-events: none; mix-blend-mode: multiply; }
 .find-hit.on { background: rgba(247, 150, 40, 0.55); box-shadow: 0 0 0 1px rgba(150, 96, 26, 0.8); }
+.alignment-focus { position: absolute; border: 2px dashed rgba(37, 99, 83, 0.85); background: rgba(37, 99, 83, 0.08); border-radius: 3px; pointer-events: none; }
 .pane-scroll.grab { cursor: grab; }
 .pane-scroll.grabbing { cursor: grabbing; user-select: none; }
 

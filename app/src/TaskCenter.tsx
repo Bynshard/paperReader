@@ -22,7 +22,7 @@ export default function TaskCenter({ onClose, onOpen }: { onClose: () => void; o
   const act = async (job: LibraryJob, retry: boolean) => {
     setBusy(true); setError("");
     try {
-      if (retry) await api.startTranslate(job.paper_id, job.pages || undefined);
+      if (retry) await api.startTranslate(job.paper_id, job.pages || undefined, job.source_version_id || undefined);
       else await api.cancelJob(job.id);
       await refresh();
     } catch (e) { setError((e as Error).message); }

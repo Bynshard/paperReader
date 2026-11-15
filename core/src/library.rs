@@ -3,7 +3,7 @@
 use crate::engine::{self, Gateway};
 use crate::pdfmeta;
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const SCHEMA: &str = r#"
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS versions (
   id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
   kind TEXT NOT NULL, sha256 TEXT NOT NULL, rel_path TEXT NOT NULL,
   pages INTEGER NOT NULL, bytes INTEGER NOT NULL, lang TEXT NOT NULL DEFAULT '',
-  engine TEXT, model TEXT, created_at INTEGER NOT NULL
+  engine TEXT, model TEXT, created_at INTEGER NOT NULL, source_version_id TEXT
 );
 CREATE TABLE IF NOT EXISTS blocks (
   id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -60,13 +60,14 @@ CREATE TABLE IF NOT EXISTS paper_tags (
 );
 CREATE TABLE IF NOT EXISTS annotations (
   id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
-  version_kind TEXT NOT NULL DEFAULT 'source', page INTEGER NOT NULL,
+  version_kind TEXT NOT NULL DEFAULT 'source', version_id TEXT, page INTEGER NOT NULL,
   rects TEXT NOT NULL, quote TEXT NOT NULL, color TEXT NOT NULL DEFAULT 'yellow',
   comment TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, paper_id TEXT NOT NULL, status TEXT NOT NULL, pages TEXT,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, error TEXT, output_version_id TEXT
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, error TEXT, output_version_id TEXT,
+  source_version_id TEXT
 );
 CREATE TABLE IF NOT EXISTS zotero_map (
   item_key TEXT PRIMARY KEY, paper_id TEXT NOT NULL, imported_at INTEGER NOT NULL
@@ -80,7 +81,11 @@ CREATE INDEX IF NOT EXISTS idx_categories_paper ON paper_categories(category_id,
 CREATE INDEX IF NOT EXISTS idx_tags_paper ON paper_tags(tag_id, paper_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_paper ON annotations(paper_id, page);
 CREATE INDEX IF NOT EXISTS idx_chats_paper_time ON chats(paper_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
 "#;
+
+/// Bump whenever a migration in [`apply_migrations`] is added.
+const SCHEMA_VERSION: i64 = 2;
 
 pub type Emitter = Arc<dyn Fn(Value) + Send + Sync>;
 
@@ -103,7 +108,7 @@ pub struct Library {
     root: PathBuf,
     _lock: fs::File,
     pub(crate) maintenance: Mutex<()>,
-    translation_tx: std::sync::mpsc::SyncSender<(String,String,PathBuf,Option<String>)>,
+    translation_tx: std::sync::mpsc::SyncSender<(String,String,PathBuf,Option<String>,Option<String>)>,
     conn: Mutex<Connection>,
     emitter: Mutex<Option<Emitter>>,
     gateway: Mutex<Option<Gateway>>,
@@ -135,6 +140,90 @@ mod hex {
     }
 }
 
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)", [name], |r| r.get::<_, bool>(0))?)
+}
+
+fn schema_version(conn: &Connection) -> Result<i64> {
+    if !table_exists(conn, "schema_migrations")? { return Ok(0); }
+    Ok(conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get::<_, Option<i64>>(0))?.unwrap_or(0))
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    Ok(conn.prepare(&format!("PRAGMA table_info({table})"))?.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|name| name == column))
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
+    if !column_exists(conn, table, column)? {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition};"))?;
+    }
+    Ok(())
+}
+
+/// Copy `library.db` to `<library>/backups/` before a schema upgrade, verify the
+/// snapshot, and keep the newest five snapshots.
+fn backup_before_upgrade(root: &Path, from: i64, to: i64) -> Result<PathBuf> {
+    let dir = root.join("backups");
+    fs::create_dir_all(&dir)?;
+    let mut dest = dir.join(format!("pre-upgrade-v{from}-to-v{to}-{}.db", now_ms()));
+    if dest.exists() { dest = dir.join(format!("pre-upgrade-v{from}-to-v{to}-{}-{}.db", now_ms(), Uuid::new_v4())); }
+    {
+        let source = Connection::open_with_flags(root.join("library.db"), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let mut snapshot = Connection::open(&dest)?;
+        Backup::new(&source, &mut snapshot)?.run_to_completion(256, Duration::from_millis(2), None)?;
+        let check: String = snapshot.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        if check != "ok" {
+            drop(snapshot);
+            let _ = fs::remove_file(&dest);
+            anyhow::bail!("升级前备份完整性校验失败，已中止升级");
+        }
+        snapshot.execute_batch("PRAGMA journal_mode=DELETE;")?;
+    }
+    let mut snapshots: Vec<PathBuf> = fs::read_dir(&dir)?.filter_map(|entry| entry.ok().map(|item| item.path())).filter(|path| path.file_name().map(|name| name.to_string_lossy().starts_with("pre-upgrade-") && name.to_string_lossy().ends_with(".db")).unwrap_or(false)).collect();
+    snapshots.sort();
+    while snapshots.len() > 5 {
+        let oldest = snapshots.remove(0);
+        let _ = fs::remove_file(oldest);
+    }
+    Ok(dest)
+}
+
+fn apply_migrations(conn: &Connection, from: i64) -> Result<()> {
+    if from < 2 {
+        ensure_column(conn, "annotations", "version_id", "TEXT")?;
+        ensure_column(conn, "versions", "source_version_id", "TEXT")?;
+        ensure_column(conn, "jobs", "source_version_id", "TEXT")?;
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_versions_source ON versions(source_version_id);")?;
+    }
+    Ok(())
+}
+
+/// Create/upgrade the SQLite schema.  Existing libraries are snapshotted before
+/// any migration so a failed upgrade can never be the only copy of user data.
+fn initialize_schema(conn: &Connection, root: &Path) -> Result<()> {
+    let legacy = table_exists(conn, "papers")?;
+    let mut version = if legacy { schema_version(conn)? } else { 0 };
+    if legacy && version == 0 { version = 1; }
+    anyhow::ensure!(version <= SCHEMA_VERSION, "论文库来自更新版本的 Moonlight（schema v{version}），请升级应用后再打开");
+    if legacy && version < SCHEMA_VERSION {
+        backup_before_upgrade(root, version, SCHEMA_VERSION)?;
+    }
+    conn.execute_batch(SCHEMA)?;
+    if legacy && version < SCHEMA_VERSION {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,?)", [now_ms()])?;
+        apply_migrations(&tx, version)?;
+        tx.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?,?)", params![SCHEMA_VERSION, now_ms()])?;
+        tx.commit()?;
+    } else if !legacy {
+        for v in 1..=SCHEMA_VERSION {
+            conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?,?)", params![v, now_ms()])?;
+        }
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_versions_source ON versions(source_version_id);")?;
+    Ok(())
+}
+
 impl Library {
     pub fn new(root: &Path) -> Result<Arc<Self>> {
         fs::create_dir_all(root.join("files"))?;
@@ -144,20 +233,14 @@ impl Library {
         lock.try_lock().map_err(|_|anyhow!("论文库已被另一个 Moonlight 进程使用"))?;
         let conn = Connection::open(root.join("library.db"))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch(SCHEMA)?;
-        let has_version: bool = conn.prepare("PRAGMA table_info(annotations)")?
-            .query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?
-            .iter().any(|name| name == "version_id");
-        if !has_version {
-            conn.execute_batch("ALTER TABLE annotations ADD COLUMN version_id TEXT;")?;
-        }
+        initialize_schema(&conn, root)?;
         conn.execute_batch(crate::zotero_local::SCHEMA)?;
         crate::organization::initialize(&conn)?;
         crate::sync::initialize(&conn)?;
         crate::search::initialize(&conn)?;
         conn.execute("UPDATE jobs SET status='failed',error='应用上次异常退出，任务已中断；可重试',updated_at=? WHERE status NOT IN ('completed','failed','cancelled')",[now_ms()])?;
         conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_paper ON jobs(paper_id) WHERE status NOT IN ('completed','failed','cancelled'); CREATE INDEX IF NOT EXISTS idx_jobs_recent ON jobs(created_at DESC,id);")?;
-        let (translation_tx,translation_rx)=std::sync::mpsc::sync_channel::<(String,String,PathBuf,Option<String>)>(32);
+        let (translation_tx,translation_rx)=std::sync::mpsc::sync_channel::<(String,String,PathBuf,Option<String>,Option<String>)>(32);
         let lib = Arc::new(Self {
             sync: crate::sync::Manager::default(),
             root: root.to_path_buf(),
@@ -172,9 +255,9 @@ impl Library {
         });
         let weak=Arc::downgrade(&lib);
         std::thread::Builder::new().name("translation-queue".into()).spawn(move||{
-            while let Ok((job,paper,source,pages))=translation_rx.recv(){
+            while let Ok((job,paper,source,pages,source_version_id))=translation_rx.recv(){
                 let Some(lib)=weak.upgrade() else {break};
-                engine::run_translation(lib,job,paper,source,pages);
+                engine::run_translation(lib,job,paper,source,pages,source_version_id);
             }
         })?;
         lib.seed_categories()?;
@@ -841,21 +924,32 @@ impl Library {
         Ok(json!({"version_id": id, "path": path.to_string_lossy(), "pages": pages, "bytes": bytes}))
     }
 
-    pub fn source_version(&self, paper_id: &str) -> Result<(String, PathBuf)> {
-        let row: (String, String) = self
-            .conn()
-            .query_row(
-                "SELECT id,rel_path FROM versions WHERE paper_id=? AND kind='source' ORDER BY created_at,id LIMIT 1",
-                params![paper_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?
-            .ok_or_else(|| anyhow!("paper has no source PDF"))?;
-        let p = PathBuf::from(&row.1);
-        Ok((row.0, if p.is_absolute() { p } else { self.root.join(p) }))
+    /// Resolve a specific source attachment (supplementary PDFs) or the primary one.
+    pub fn source_version_for(&self, paper_id: &str, version_id: Option<&str>) -> Result<(String, PathBuf)> {
+        let (id, rel_path): (String, String) = if let Some(version_id) = version_id {
+            self.conn()
+                .query_row(
+                    "SELECT id,rel_path FROM versions WHERE id=? AND paper_id=? AND kind='source'",
+                    params![version_id, paper_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("找不到该原文附件"))?
+        } else {
+            self.conn()
+                .query_row(
+                    "SELECT id,rel_path FROM versions WHERE paper_id=? AND kind='source' ORDER BY created_at,id LIMIT 1",
+                    params![paper_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("paper has no source PDF"))?
+        };
+        let p = PathBuf::from(&rel_path);
+        Ok((id, if p.is_absolute() { p } else { self.root.join(p) }))
     }
 
-    pub fn start_translation(self: &Arc<Self>, paper_id: &str, pages: Option<String>) -> Result<Value> {
+    pub fn start_translation(self: &Arc<Self>, paper_id: &str, pages: Option<String>, source_version_id: Option<String>) -> Result<Value> {
         if self.gateway.lock().unwrap().is_none() {self.ensure_gateway()?;}
         // Fail before queueing a job when the translation kernel is missing, so
         // the user sees an actionable message instead of a background
@@ -864,7 +958,7 @@ impl Library {
             .map(|config| config.babeldoc.trim().to_string())
             .filter(|value| !value.is_empty());
         engine::babeldoc_executable(configured_babeldoc.as_deref())?;
-        let (_, src) = self.source_version(paper_id)?;
+        let (source_id, src) = self.source_version_for(paper_id, source_version_id.as_deref())?;
         let job_id = Uuid::new_v4().to_string();
         {
             let conn=self.conn();
@@ -872,10 +966,10 @@ impl Library {
             anyhow::ensure!(available,"回收站中的论文不能启动翻译");
             let active:i64=conn.query_row("SELECT count(*) FROM jobs WHERE paper_id=? AND status NOT IN ('completed','failed','cancelled')",[paper_id],|r|r.get(0))?;
             anyhow::ensure!(active==0,"该论文已有任务，请等待完成或先停止");
-            conn.execute("INSERT INTO jobs(id,paper_id,status,pages,created_at,updated_at) VALUES(?,?,?,?,?,?)",params![job_id,paper_id,"queued",pages,now_ms(),now_ms()])?;
+            conn.execute("INSERT INTO jobs(id,paper_id,status,pages,created_at,updated_at,source_version_id) VALUES(?,?,?,?,?,?,?)",params![job_id,paper_id,"queued",pages,now_ms(),now_ms(),source_id])?;
         }
         self.cancels.lock().unwrap().insert(job_id.clone(),Arc::new(AtomicBool::new(false)));
-        if self.translation_tx.try_send((job_id.clone(),paper_id.into(),src,pages)).is_err(){
+        if self.translation_tx.try_send((job_id.clone(),paper_id.into(),src,pages,Some(source_id))).is_err(){
             self.set_job_status(&job_id,"failed",Some("翻译队列已满，请稍后重试"),None);
             self.clear_cancel(&job_id);
             return Err(anyhow!("翻译队列已满，请稍后重试"));
@@ -935,19 +1029,20 @@ impl Library {
     pub fn get_job(&self, job_id: &str) -> Result<Value> {
         let conn = self.conn();
         let row = conn
-            .query_row("SELECT j.id,j.paper_id,j.status,j.pages,j.created_at,j.updated_at,j.error,j.output_version_id,p.title FROM jobs j LEFT JOIN papers p ON p.id=j.paper_id WHERE j.id=?", params![job_id], |r| {
+            .query_row("SELECT j.id,j.paper_id,j.status,j.pages,j.created_at,j.updated_at,j.error,j.output_version_id,j.source_version_id,p.title FROM jobs j LEFT JOIN papers p ON p.id=j.paper_id WHERE j.id=?", params![job_id], |r| {
                 Ok(json!({
                     "id": r.get::<_, String>(0)?, "paper_id": r.get::<_, String>(1)?, "status": r.get::<_, String>(2)?,
                     "pages": r.get::<_, Option<String>>(3)?, "created_at": r.get::<_, i64>(4)?, "updated_at": r.get::<_, i64>(5)?,
                     "error": r.get::<_, Option<String>>(6)?, "output_version_id": r.get::<_, Option<String>>(7)?,
-                    "title": r.get::<_, Option<String>>(8)?,
+                    "source_version_id": r.get::<_, Option<String>>(8)?,
+                    "title": r.get::<_, Option<String>>(9)?,
                 }))
             })
             .optional()?;
         Ok(row.unwrap_or(Value::Null))
     }
 
-    pub fn attach_translation(&self, paper_id: &str, output: &Path, job_id: &str) -> Result<String> {
+    pub fn attach_translation(&self, paper_id: &str, output: &Path, job_id: &str, source_version_id: Option<&str>) -> Result<String> {
         let pages=pdfmeta::page_count(output)?;
         anyhow::ensure!(pages>0,"翻译引擎输出不是有效的非空 PDF");
         let version_id=Uuid::new_v4().to_string();
@@ -964,7 +1059,7 @@ impl Library {
             let available:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM papers p JOIN jobs j ON j.paper_id=p.id WHERE p.id=? AND p.deleted_at IS NULL AND j.id=? AND j.status NOT IN ('cancelling','cancelled','failed','completed'))",params![paper_id,job_id],|r|r.get(0))?;
             anyhow::ensure!(available,"cancelled");
             fs::rename(&tmp,&dest)?;
-            tx.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,engine,model,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",params![version_id,paper_id,"translated",sha,dest_rel,pages,bytes,"zh-CN","babeldoc",std::env::var("MOONLIGHT_MODEL").unwrap_or_default(),now_ms()])?;
+            tx.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,engine,model,created_at,source_version_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",params![version_id,paper_id,"translated",sha,dest_rel,pages,bytes,"zh-CN","babeldoc",std::env::var("MOONLIGHT_MODEL").unwrap_or_default(),now_ms(),source_version_id])?;
             tx.execute("UPDATE papers SET updated_at=? WHERE id=?",params![now_ms(),paper_id])?;
             tx.execute("UPDATE jobs SET status='completed',updated_at=?,output_version_id=?,error=NULL WHERE id=?",params![now_ms(),version_id,job_id])?;
             tx.commit()?;
@@ -1489,5 +1584,134 @@ mod gateway_tests {
         assert!(missing["error"].as_str().unwrap().contains("未找到"), "{missing}");
         drop(lib);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_upgrade_snapshots_the_library_before_migrating() {
+        let root = std::env::temp_dir().join(format!("moonlight-schema-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        {
+            let conn = Connection::open(root.join("library.db")).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute("INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES('legacy-paper','Legacy','A',1,1)", []).unwrap();
+            conn.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,created_at) VALUES('legacy-version','legacy-paper','source','x','files/x.pdf',1,1,1)", []).unwrap();
+            conn.execute_batch("DROP TABLE schema_migrations; DROP INDEX IF EXISTS idx_versions_source; ALTER TABLE versions DROP COLUMN source_version_id; ALTER TABLE jobs DROP COLUMN source_version_id;").unwrap();
+        }
+        let lib = Library::new(&root).unwrap();
+        let version: i64 = lib.conn().query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(column_exists(&lib.conn(), "versions", "source_version_id").unwrap());
+        assert!(column_exists(&lib.conn(), "jobs", "source_version_id").unwrap());
+        let title: String = lib.conn().query_row("SELECT title FROM papers WHERE id='legacy-paper'", [], |r| r.get(0)).unwrap();
+        assert_eq!(title, "Legacy");
+        drop(lib);
+        let backups: Vec<PathBuf> = fs::read_dir(root.join("backups")).unwrap().filter_map(|entry| entry.ok().map(|item| item.path())).collect();
+        assert_eq!(backups.len(), 1, "升级前应生成一份快照");
+        let snapshot = Connection::open(&backups[0]).unwrap();
+        let check: String = snapshot.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(check, "ok");
+        let backed_up_title: String = snapshot.query_row("SELECT title FROM papers WHERE id='legacy-paper'", [], |r| r.get(0)).unwrap();
+        assert_eq!(backed_up_title, "Legacy");
+        drop(snapshot);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn translation_version_binds_to_the_supplementary_source_pdf() {
+        let (lib, root) = temp_library();
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("../samples/generated/narrow-column.pdf");
+        let imported = lib.import_paths(vec![sample.to_string_lossy().to_string()]);
+        let paper_id = imported[0]["paper_id"].as_str().unwrap().to_string();
+        let supplement_id = Uuid::new_v4().to_string();
+        let rel = format!("files/supplement-{supplement_id}.pdf");
+        fs::copy(&sample, root.join(&rel)).unwrap();
+        let sha = sha256_file(&sample).unwrap();
+        let bytes = sample.metadata().unwrap().len() as i64;
+        lib.conn().execute(
+            "INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,created_at,source_version_id) VALUES(?,?,?,?,?,?,?,?,?,NULL)",
+            params![supplement_id, paper_id, "source", sha, rel, 1i64, bytes, "en", now_ms()],
+        ).unwrap();
+        let (resolved, _) = lib.source_version_for(&paper_id, Some(&supplement_id)).unwrap();
+        assert_eq!(resolved, supplement_id);
+        let job_id = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO jobs(id,paper_id,status,pages,created_at,updated_at,source_version_id) VALUES(?,?,?,?,?,?,?)",
+            params![job_id, paper_id, "queued", Option::<String>::None, now_ms(), now_ms(), supplement_id],
+        ).unwrap();
+        let output = root.join("supplement-output.pdf");
+        fs::copy(&sample, &output).unwrap();
+        let version_id = lib.attach_translation(&paper_id, &output, &job_id, Some(&supplement_id)).unwrap();
+        let bound: Option<String> = lib.conn().query_row("SELECT source_version_id FROM versions WHERE id=?", params![version_id], |r| r.get(0)).unwrap();
+        assert_eq!(bound.as_deref(), Some(supplement_id.as_str()));
+        let job = lib.get_job(&job_id).unwrap();
+        assert_eq!(job["source_version_id"], json!(supplement_id));
+        assert_eq!(job["status"], json!("completed"));
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supplementary_translation_runs_end_to_end_and_binds_the_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let (lib, root) = temp_library();
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("../samples/generated/narrow-column.pdf");
+        let imported = lib.import_paths(vec![sample.to_string_lossy().to_string()]);
+        let paper_id = imported[0]["paper_id"].as_str().unwrap().to_string();
+        let supplement_id = Uuid::new_v4().to_string();
+        let rel = format!("files/supplement-{supplement_id}.pdf");
+        fs::copy(&sample, root.join(&rel)).unwrap();
+        lib.conn().execute(
+            "INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,created_at,source_version_id) VALUES(?,?,?,?,?,?,?,?,?,NULL)",
+            params![supplement_id, paper_id, "source", sha256_file(&sample).unwrap(), rel, 1i64, sample.metadata().unwrap().len() as i64, "en", now_ms()],
+        ).unwrap();
+        let fake = root.join("fake-babeldoc");
+        fs::write(&fake, "#!/bin/sh\nout=\"\"\nfiles=\"\"\nwhile [ $# -gt 0 ]; do case \"$1\" in --files) files=\"$2\"; shift 2;; --output) out=\"$2\"; shift 2;; *) shift;; esac; done\nmkdir -p \"$out\"\ncp \"$files\" \"$out/result.mono.pdf\"\n").unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let upstream = fake_upstream(200, "ok", Duration::ZERO);
+        lib.reload_gateway(&json!({"base_url": upstream.base_url, "model": "academic-test", "api_key": "fixture-key", "babeldoc": fake.to_string_lossy()})).unwrap();
+        let job_id = lib.start_translation(&paper_id, None, Some(supplement_id.clone())).unwrap()["job_id"].as_str().unwrap().to_string();
+        let mut status = String::new();
+        for _ in 0..200 {
+            let job = lib.get_job(&job_id).unwrap();
+            status = job["status"].as_str().unwrap_or("").to_string();
+            if matches!(status.as_str(), "completed" | "failed" | "cancelled") { break; }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(status, "completed", "job did not complete");
+        let (bound, source): (Option<String>, Option<String>) = lib.conn().query_row(
+            "SELECT source_version_id, (SELECT source_version_id FROM jobs WHERE id=?) FROM versions WHERE paper_id=? AND kind='translated' ORDER BY created_at DESC LIMIT 1",
+            params![job_id, paper_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(bound.as_deref(), Some(supplement_id.as_str()));
+        assert_eq!(source.as_deref(), Some(supplement_id.as_str()));
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fresh_library_uses_current_schema_without_a_snapshot() {
+        let root = std::env::temp_dir().join(format!("moonlight-fresh-{}", Uuid::new_v4()));
+        let lib = Library::new(&root).unwrap();
+        let version: i64 = lib.conn().query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        drop(lib);
+        let snapshots = fs::read_dir(root.join("backups")).map(|items| items.count()).unwrap_or(0);
+        assert_eq!(snapshots, 0, "全新库不应产生升级快照");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_instead_of_downgraded() {
+        let root = std::env::temp_dir().join(format!("moonlight-newer-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        {
+            let conn = Connection::open(root.join("library.db")).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES(99,?)", [now_ms()]).unwrap();
+        }
+        let error = Library::new(&root).err().expect("newer schema must be rejected").to_string();
+        assert!(error.contains("更新版本"), "{error}");
+        fs::remove_dir_all(root).unwrap();
     }
 }

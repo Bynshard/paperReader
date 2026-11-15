@@ -47,8 +47,9 @@ Playwright 视觉回归覆盖阅读器缩放/查找/选区、任务中心、详�
 
 ## 七、尚未落地（下一批优先级建议）
 
-1. 补充材料（非主文档）按 `source_version_id` 独立翻译，并迁移旧译文批注。
-2. 双栏段落级 bbox 对齐与双向悬停高亮；跨页选词合并。
+1. 旧译文批注迁移（需页码/坐标预览与回滚 UI）；补充材料翻译与双栏段落对齐已完成，
+   见 [SCHEMA_SUPPLEMENT_ALIGNMENT_20261115.md](SCHEMA_SUPPLEMENT_ALIGNMENT_20261115.md)。
+2. 跨页选词合并、跨页段落匹配。
 3. 区域框选截图 → 多模态 AI 读图 / 公式转 LaTeX / 表格转 Markdown（需要视觉模型与图像 IPC）。
 4. 多标签页阅读、Sioyek 式悬停预览与画中画钉选。
 5. 论文导读卡（Digest）与语义自动高亮层。
@@ -56,4 +57,4 @@ Playwright 视觉回归覆盖阅读器缩放/查找/选区、任务中心、详�
 7. 术语表（Glossary）管理并透传 BabelDOC `--glossary-files`。
 8. 重复论文无损合并 `merge_papers`；BibTeX/RIS 导入；Watch Folder；引文格式（GB/T 7714 等）与一键复制。
 9. 结构化笔记编辑器、批注汇总导出、智能文件夹。
-10. 后台解析/OCR 任务队列、`schema_version` 迁移台账、PDF Range 流式读取。
+10. 后台解析/OCR 任务队列、PDF Range 流式读取；`schema_version` 迁移台账与升级前快照已完成。

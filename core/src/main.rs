@@ -277,6 +277,7 @@ fn dispatch(lib: &Arc<Library>, method: &str, params: &Value) -> Result<Value> {
         "start_translate" => lib.start_translation(
             &param_str(params, "paper_id")?,
             params.get("pages").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            params.get("version_id").and_then(Value::as_str).map(str::to_string),
         ),
         "cancel_job" => {
             lib.cancel_job(&param_str(params, "job_id")?)?;

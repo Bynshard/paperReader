@@ -44,6 +44,7 @@ export default function SettingsModal({ info, onClose, onChanged, onOpenPaper }:
                   <dt>PDF 翻译模型</dt><dd>{info?.model || "—"}</dd>
                   <dt>凭据</dt><dd>{info?.credentialConfigured ? "已配置（仅主进程 / 服务进程可见）" : "未配置 API：可在翻译引擎中填写，或登录 Codex 使用论文问答"}</dd>
                   <dt>离线能力</dt><dd>导入、分类、检索、原文阅读、批注与导出不依赖网络</dd>
+                  <dt>升级快照</dt><dd className="mono small">{info?.library ? `${info.library}/backups` : "—"}（结构升级前自动生成，保留最近 5 份）</dd>
                 </dl>
                 <section className="settings-section">
                   <h3>论文库维护</h3>

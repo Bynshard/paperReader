@@ -10,6 +10,7 @@ export type Version = {
   engine?: string | null;
   model?: string | null;
   created_at: number;
+  source_version_id?: string | null;
 };
 
 export type Category = { id: string; name: string; color?: string | null; parent_id?:string|null };
@@ -105,4 +106,4 @@ export type AppInfo = {
 
 export type PdfBytes = { bytes: Uint8Array; versionId: string; pages: number };
 
-export type LibraryJob={id:string;paper_id:string;status:string;pages?:string;created_at:number;updated_at?:number;title?:string|null;error?:string;output_version_id?:string};
+export type LibraryJob={id:string;paper_id:string;status:string;pages?:string;created_at:number;updated_at?:number;title?:string|null;source_version_id?:string|null;error?:string;output_version_id?:string};
