@@ -83,9 +83,9 @@ export default function DocumentParsing({ paperId, versionId, pages, page, pane,
       <button className="status-chevron" aria-label="更多解析选项" aria-expanded={open} onClick={openMenu}><ChevronDown size={14} /></button>
       {open && (
         <FloatingLayer x={anchor.x} y={anchor.y} onClose={() => setOpen(false)} ignore={box} className="menu parse-menu" label="文档解析选项">
-          <button onClick={() => { setOpen(false); void run(false); }}><ScanText size={15} />解析当前页</button>
-          <button onClick={() => { setOpen(false); void run(false, true); }}><ScanText size={15} />OCR 当前页</button>
-          <button onClick={() => { setOpen(false); void run(true); }}><ScanText size={15} />解析全文（{pages} 页）</button>
+          <button onClick={() => { void run(false); }}><ScanText size={15} />解析当前页</button>
+          <button onClick={() => { void run(false, true); }}><ScanText size={15} />OCR 当前页</button>
+          <button onClick={() => { void run(true); }}><ScanText size={15} />解析全文（{pages} 页）</button>
           {busy && <button className="danger" onClick={() => controller.current?.abort()}><Square size={14} />停止解析</button>}
           {progress && <p className="menu-status" role="status">{progress}</p>}
           {error && <p className="menu-status error" role="alert">{error}</p>}

@@ -107,7 +107,7 @@ export default function App() {
   }, [navOpen]);
 
   const changeFilter = (next: Filter) => { setFilter(next); setOffset(0); setOpenPaper(null); setNavOpen(false); };
-  const title = filter.kind === "category" ? filter.name : filter.kind === "tag" ? `#${filter.name}` : filter.kind === "favorite" ? "星标" : filter.kind === "unread" ? "未读" : filter.kind === "trash" ? "回收站" : "全部论文";
+  const title = filter.kind === "category" ? filter.name : filter.kind === "tag" ? `#${filter.name}` : filter.kind === "favorite" ? "星标" : filter.kind === "unread" ? "未读" : filter.kind === "trash" ? "回收站" : "论文库";
 
   const open = async (summary: PaperSummary | Paper) => {
     const request = ++openRequest.current;
