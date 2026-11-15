@@ -220,6 +220,11 @@ fn dispatch(lib: &Arc<Library>, method: &str, params: &Value) -> Result<Value> {
             Ok(json!({"ok": true}))
         }
         "purge_paper" => lib.purge(&param_str(params, "paper_id")?),
+        "bulk_set_status" => lib.bulk_set_status(params),
+        "bulk_trash" => lib.bulk_trash(params),
+        "bulk_restore" => lib.bulk_restore(params),
+        "bulk_purge" => lib.bulk_purge(params),
+        "empty_trash" => lib.empty_trash(),
         "list_taxonomy" => lib.taxonomy(),
         "set_categories" => {
             let ids = params.get("category_ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
@@ -325,6 +330,8 @@ fn dispatch(lib: &Arc<Library>, method: &str, params: &Value) -> Result<Value> {
         "ai_prepare" => ai::prepare(lib, params),
         "ai_history" => ai::history(lib, &param_str(params,"paper_id")?),
         "ai_save" => ai::save(lib, params),
+        "ai_delete" => ai::delete(lib, &param_str(params,"chat_id")?),
+        "ai_clear" => ai::clear(lib, &param_str(params,"paper_id")?),
         "explain" | "translate_text" => {
             if lib.gateway().is_none() {
                 lib.ensure_gateway()?;

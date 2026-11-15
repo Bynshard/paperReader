@@ -1,41 +1,63 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
-import { ChevronDown, ChevronUp, Loader2, Search, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { CaseSensitive, ChevronDown, ChevronUp, Loader2, Search, X } from "lucide-react";
 import type { FindMatch, PaneApi } from "./PdfPane";
 
 type Props = {
   pane: RefObject<PaneApi | null>;
   onJump: (page: number, bbox?: number[]) => void;
+  onResults: (matches: FindMatch[], index: number) => void;
   onClose: () => void;
 };
 
-/** In-document find bar (Ctrl/Cmd+F): counts matches, jumps and outlines the hit. */
-export default function FindBar({ pane, onJump, onClose }: Props) {
+/** In-document find bar: debounced search, case option, all-hit highlights. */
+export default function FindBar({ pane, onJump, onResults, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<FindMatch[] | null>(null);
   const [index, setIndex] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [caseSensitive, setCaseSensitive] = useState(false);
   const [error, setError] = useState("");
   const input = useRef<HTMLInputElement>(null);
+  const token = useRef(0);
+  const runRef = useRef<(needle: string) => Promise<void>>(async () => undefined);
 
   useEffect(() => { input.current?.focus(); input.current?.select(); }, []);
 
-  const land = (rows: FindMatch[], next: number) => {
+  const land = useCallback((rows: FindMatch[], next: number) => {
     const match = rows[next];
     if (match) onJump(match.page, match.bbox);
-  };
-  const run = async () => {
-    const needle = query.trim();
-    if (!needle) { setMatches(null); return; }
+    onResults(rows, next);
+  }, [onJump, onResults]);
+
+  const run = useCallback(async (needle: string) => {
+    const current = ++token.current;
     setBusy(true); setError("");
     try {
-      const rows = (await pane.current?.find(needle)) || [];
+      const rows = (await (caseSensitive ? pane.current?.find(needle, { caseSensitive: true }) : pane.current?.find(needle))) || [];
+      if (current !== token.current) return;
       setMatches(rows); setIndex(0); land(rows, 0);
     } catch (e) {
-      setError((e as Error).message); setMatches([]);
+      if (current !== token.current) return;
+      setError((e as Error).message); setMatches([]); onResults([], 0);
     } finally {
-      setBusy(false);
+      if (current === token.current) setBusy(false);
     }
-  };
+  }, [caseSensitive, pane, land, onResults]);
+  runRef.current = run;
+
+  useEffect(() => {
+    const needle = query.trim();
+    setMatches(null);
+    setIndex(0);
+    onResults([], 0);
+    if (!needle) {
+      token.current++;
+      return;
+    }
+    const timer = setTimeout(() => { void runRef.current(needle); }, 300);
+    return () => clearTimeout(timer);
+  }, [query, caseSensitive, onResults]);
+
   const step = (delta: number) => {
     const rows = matches || [];
     if (!rows.length) return;
@@ -48,9 +70,10 @@ export default function FindBar({ pane, onJump, onClose }: Props) {
     <input ref={input} aria-label="文内查找关键词" placeholder="在本文中查找…" value={query}
       onChange={(event) => setQuery(event.target.value)}
       onKeyDown={(event) => {
-        if (event.key === "Enter") { event.preventDefault(); if (matches && matches.length) step(event.shiftKey ? -1 : 1); else void run(); }
+        if (event.key === "Enter") { event.preventDefault(); if (matches && matches.length) step(event.shiftKey ? -1 : 1); else void run(query.trim()); }
         if (event.key === "Escape") onClose();
       }} />
+    <button className={caseSensitive ? "icon-btn on" : "icon-btn"} aria-label="区分大小写" aria-pressed={caseSensitive} title="区分大小写" onClick={() => setCaseSensitive((value) => !value)}><CaseSensitive size={15} /></button>
     <span className="find-count" role="status">
       {busy ? <Loader2 className="spin" size={13} /> : matches === null ? "" : matches.length ? `${index + 1}/${matches.length}` : "无匹配"}
     </span>

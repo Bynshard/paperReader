@@ -105,4 +105,4 @@ export type AppInfo = {
 
 export type PdfBytes = { bytes: Uint8Array; versionId: string; pages: number };
 
-export type LibraryJob={id:string;paper_id:string;status:string;pages?:string;created_at:number;error?:string;output_version_id?:string};
+export type LibraryJob={id:string;paper_id:string;status:string;pages?:string;created_at:number;updated_at?:number;title?:string|null;error?:string;output_version_id?:string};

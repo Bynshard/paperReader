@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Copy, FileText,
-  Languages, Lightbulb, ListTree, Loader2, Menu, MessageSquareQuote, Minus, MoreHorizontal, NotebookPen, PanelRightClose,
-  PanelRightOpen, Pencil, Plus, Search, Send, Sparkles, Square, Trash2, Undo2, Redo2, X,
+  Languages, Lightbulb, ListTree, Loader2, Menu, MessageSquareQuote, Minus, MoreHorizontal, MoveHorizontal, NotebookPen, PanelRightClose,
+  PanelRightOpen, Pencil, Plus, RotateCcw, Search, Send, Sparkles, Square, Trash2, Undo2, Redo2, X,
 } from "lucide-react";
 import type { Annotation, ImportedAttachment, Paper, PdfBytes, Source } from "./types";
 import PaperEditor from "./PaperEditor";
 import MarkdownAnswer from "./MarkdownAnswer";
 import DocumentParsing from "./DocumentParsing";
 import ImportedFiles from "./ImportedFiles";
-import PdfPane, { type PaneApi, type Selection } from "./PdfPane";
+import PdfPane, { type FindMatch, type PaneApi, type Selection } from "./PdfPane";
 import FloatingLayer from "./FloatingLayer";
 import ReaderNav from "./ReaderNav";
 import FindBar from "./FindBar";
@@ -57,6 +57,13 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
   const [files, setFiles] = useState<ImportedAttachment[]>([]);
   const sourceRequest = useRef(0);
   const [nativeText, setNativeText] = useState<Record<number, boolean>>({});
+  const [activeSide, setActiveSide] = useState<"source" | "translated">("source");
+  const [findMatches, setFindMatches] = useState<FindMatch[]>([]);
+  const [findIndex, setFindIndex] = useState(0);
+  const [zoomMode, setZoomMode] = useState<"custom" | "fit-width" | "fit-page">(() => {
+    try { const saved = localStorage.getItem("moonlight-reader-zoom-mode"); return saved === "fit-width" || saved === "fit-page" ? saved : "custom"; } catch { return "custom"; }
+  });
+  useEffect(() => { try { localStorage.setItem("moonlight-reader-zoom-mode", zoomMode); } catch { /* ignore */ } }, [zoomMode]);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [annotating, setAnnotating] = useState(false);
   const [activeAnnotation, setActiveAnnotation] = useState<{ annotation: Annotation; x: number; y: number } | null>(null);
@@ -117,6 +124,15 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
   }, [paper.id]);
 
   const refreshAiHistory = () => api.aiHistory(paper.id).then(setAiHistory).catch(() => undefined);
+  const clearChat = async () => {
+    if (!confirm("清空本篇论文的全部 AI 对话记录？")) return;
+    try { await api.aiClear(paper.id); setAiHistory([]); setLive(null); onToast("本篇对话已清空"); }
+    catch (e) { setAiError((e as Error).message); }
+  };
+  const deleteExchange = async (chatId: string) => {
+    try { await api.aiDelete(chatId); await refreshAiHistory(); }
+    catch (e) { setAiError((e as Error).message); }
+  };
   const reloadAnnotations = async () => { const rows = await api.annotations(paper.id); setAnnotations(rows); return rows; };
 
   const sourceApi = useRef<PaneApi | null>(null);
@@ -214,12 +230,13 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
       const bytes = await api.pdf(paper.id, "source", versionId);
       if (request !== sourceRequest.current) return;
       remember(targetPage, fraction);
-      setSource(bytes); setMode("source"); setSelection(null); setNativeText({}); setError(null); setShowTranslateMenu(false);
+      setSource(bytes); setMode("source"); chooseActive("source"); setSelection(null); setNativeText({}); setError(null); setShowTranslateMenu(false);
     } catch (e) {
       if (request === sourceRequest.current) onToast(`打开附件失败：${String(e)}`);
     }
   };
 
+  useEffect(() => { setFindMatches([]); setFindIndex(0); }, [activeSide, source?.versionId, translated?.versionId]);
   useEffect(() => { setPageInput(String(page)); }, [page]);
   useEffect(() => () => {
     clearTimeout(persistTimer.current);
@@ -266,16 +283,49 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
     return () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
   }, []);
 
+  const chooseActive = (side: "source" | "translated") => { activePane.current = side; setActiveSide(side); };
+  const clampScale = (value: number) => Math.max(0.4, Math.min(4, Number(value.toFixed(3))));
+  const zoomTo = (value: number, focal?: { clientX: number; clientY: number }, keepMode = false) => {
+    sourceApi.current?.prepareZoom?.(focal);
+    transApi.current?.prepareZoom?.(focal);
+    if (!keepMode) setZoomMode("custom");
+    setScale(clampScale(value));
+  };
+  const applyFit = useCallback(() => {
+    if (zoomMode === "custom") return;
+    const pane = activeSide === "translated" ? transApi.current : sourceApi.current;
+    if (!pane) return;
+    pane.prepareZoom?.();
+    const next = pane.fit(zoomMode === "fit-width" ? "width" : "page");
+    if (next) setScale(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomMode, activeSide]);
+  useEffect(() => {
+    if (zoomMode === "custom") return;
+    const run = () => requestAnimationFrame(applyFit);
+    const initial = setTimeout(run, 80);
+    run();
+    const element = panesRef.current;
+    let observer: ResizeObserver | undefined;
+    if (element) { observer = new ResizeObserver(run); observer.observe(element); }
+    return () => { clearTimeout(initial); observer?.disconnect(); };
+  }, [zoomMode, activeSide, mode, sideOpen, sideWidth, source?.versionId, translated?.versionId, applyFit]);
+
   useEffect(() => {
     const element = panesRef.current;
     if (!element) return;
     const wheel = (event: WheelEvent) => {
       if (!(event.ctrlKey || event.metaKey)) return;
       event.preventDefault();
-      setScale((current) => Math.max(0.5, Math.min(3, +(current - event.deltaY * 0.0015).toFixed(2))));
+      const focal = { clientX: event.clientX, clientY: event.clientY };
+      sourceApi.current?.prepareZoom?.(focal);
+      transApi.current?.prepareZoom?.(focal);
+      setZoomMode("custom");
+      setScale((current) => clampScale(current * Math.exp(-event.deltaY * 0.002)));
     };
     element.addEventListener("wheel", wheel, { passive: false });
     return () => element.removeEventListener("wheel", wheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -285,19 +335,24 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") { event.preventDefault(); setFindOpen(true); return; }
       if (event.altKey && event.key === "ArrowLeft") { event.preventDefault(); goBack(); return; }
       if (event.altKey && event.key === "ArrowRight") { event.preventDefault(); goForward(); return; }
-      if (event.key === "Escape") { setFindOpen(false); setNavTab(null); return; }
+      if (event.key === "Escape") { setFindOpen(false); setFindMatches([]); setFindIndex(0); setNavTab(null); return; }
       if (typing || !source) return;
+      if (event.ctrlKey || event.metaKey) {
+        if (event.key === "+" || event.key === "=") { event.preventDefault(); zoomTo(scale * 1.2); return; }
+        if (event.key === "-") { event.preventDefault(); zoomTo(scale / 1.2); return; }
+        if (event.key === "0") { event.preventDefault(); setZoomMode("fit-width"); return; }
+      }
       if (event.key === "PageDown" || event.key === "j" || event.key === "J" || event.key === "ArrowDown" && event.shiftKey) { event.preventDefault(); navigate(Math.min(source.pages, page + 1)); }
       else if (event.key === "PageUp" || event.key === "k" || event.key === "K" || event.key === "ArrowUp" && event.shiftKey) { event.preventDefault(); navigate(Math.max(1, page - 1)); }
       else if (event.key === "Home") { event.preventDefault(); navigate(1); }
       else if (event.key === "End") { event.preventDefault(); navigate(source.pages); }
-      else if (event.key === "+" || event.key === "=") { event.preventDefault(); setScale((value) => Math.min(3, +(value + 0.15).toFixed(2))); }
-      else if (event.key === "-") { event.preventDefault(); setScale((value) => Math.max(0.5, +(value - 0.15).toFixed(2))); }
+      else if (event.key === "+" || event.key === "=") { event.preventDefault(); zoomTo(scale * 1.2); }
+      else if (event.key === "-") { event.preventDefault(); zoomTo(scale / 1.2); }
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, source?.pages, source?.versionId]);
+  }, [page, source?.pages, source?.versionId, scale]);
 
   const savePosition = () => {
     const pane = activePane.current === "translated" ? transApi.current : sourceApi.current;
@@ -311,6 +366,8 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
       try { await loadTranslated(); } catch { onToast("还没有可用的译文版本"); return; }
     }
     setMode(next);
+    if (next === "translated") chooseActive("translated");
+    else if (next === "source") chooseActive("source");
     if (next === "translated" || next === "dual") transApi.current?.goTo(position.page, position.fraction);
     if (next === "source" || next === "dual") sourceApi.current?.goTo(position.page, position.fraction);
     setSelection(null);
@@ -416,6 +473,7 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
     setTranslated(null);
     setSelection(null);
     setAnnotationDraft("");
+    chooseActive("translated");
   };
 
   const copyAnswer = async (text: string) => {
@@ -435,6 +493,7 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
 
   const messages = useMemo(() => [...aiHistory].reverse(), [aiHistory]);
   const contextAnchorOf = () => { const rect = contextButton.current?.getBoundingClientRect(); if (rect) setContextAnchor({ x: rect.left + rect.width / 2, y: rect.bottom }); };
+  const handleFindResults = useCallback((matches: FindMatch[], index: number) => { setFindMatches(matches); setFindIndex(index); }, []);
 
   if (loading) return <div className="reader loading">正在打开论文…</div>;
   if (error || !source) {
@@ -488,18 +547,21 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
           <button className="icon-btn" aria-label="下一页" onClick={() => navigate(Math.min(source.pages, page + 1))}><ChevronRight size={16} /></button>
         </div>
         <div className="zoom">
-          <button className="icon-btn" aria-label="缩小" onClick={() => setScale((value) => Math.max(0.5, +(value - 0.15).toFixed(2)))}><Minus size={15} /></button>
-          <select className="select compact zoom-select" aria-label="缩放比例" value={zoomValue(scale)} onChange={(event) => {
+          <button className="icon-btn" aria-label="缩小" onClick={() => zoomTo(scale / 1.2)}><Minus size={15} /></button>
+          <select className="select compact zoom-select" aria-label="缩放比例" value={zoomValue(scale, zoomMode)} onChange={(event) => {
             const choice = event.target.value;
-            if (choice === "fit-width" || choice === "fit-page") { const value = sourceApi.current?.fit(choice === "fit-width" ? "width" : "page"); if (value) setScale(value); }
-            else if (choice !== "current") setScale(Number(choice));
+            if (choice === "fit-width" || choice === "fit-page") { setZoomMode(choice); return; }
+            if (choice === "current") return;
+            setZoomMode("custom");
+            zoomTo(Number(choice));
           }}>
             <option value="current" disabled>{Math.round(scale * 100)}%</option>
-            <option value="fit-width">适应页宽</option>
-            <option value="fit-page">适应整页</option>
-            {[0.6, 0.75, 1, 1.15, 1.25, 1.5, 2, 3].map((value) => <option key={value} value={value}>{Math.round(value * 100)}%</option>)}
+            <option value="fit-width">适应页宽{zoomMode === "fit-width" ? `（${Math.round(scale * 100)}%）` : ""}</option>
+            <option value="fit-page">适应整页{zoomMode === "fit-page" ? `（${Math.round(scale * 100)}%）` : ""}</option>
+            {[0.4, 0.5, 0.75, 1, 1.15, 1.25, 1.5, 2, 3, 4].map((value) => <option key={value} value={value}>{Math.round(value * 100)}%</option>)}
           </select>
-          <button className="icon-btn" aria-label="放大" onClick={() => setScale((value) => Math.min(3, +(value + 0.15).toFixed(2)))}><Plus size={15} /></button>
+          <button className="icon-btn" aria-label="放大" onClick={() => zoomTo(scale * 1.2)}><Plus size={15} /></button>
+          <button className={zoomMode === "fit-width" ? "icon-btn on" : "icon-btn"} aria-label="一键适应页宽" title="适应页宽（Ctrl/Cmd+0）" onClick={() => setZoomMode("fit-width")}><MoveHorizontal size={15} /></button>
         </div>
         <div className="translate-wrap">
           <button className="btn primary" title={!isPrimary ? "全文翻译当前使用主文档" : ""} onClick={() => (translated ? setShowTranslateMenu((value) => !value) : startTranslate(undefined))} disabled={!!job || !isPrimary}>
@@ -512,31 +574,37 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
       </header>
 
       {job && <div className="jobbar"><div className="jobbar-text">翻译任务 · {statusLabel(job.status)} {job.phase ? `· ${phaseLabel(job)}` : ""}</div><div className="progress"><div className={`bar ${job.status}`} /></div></div>}
-      {findOpen && <FindBar pane={sourceApi} onJump={(target, bbox) => { remember(target, 0); sourceApi.current?.goTo(target, 0, bbox); }} onClose={() => setFindOpen(false)} />}
+      {findOpen && <FindBar key={`${activeSide}:${source.versionId}:${translated?.versionId ?? ""}`} pane={activeSide === "translated" ? transApi : sourceApi}
+        onResults={handleFindResults}
+        onJump={(target, bbox) => { remember(target, 0); (activeSide === "translated" ? transApi : sourceApi).current?.goTo(target, 0, bbox); }}
+        onClose={() => { setFindOpen(false); setFindMatches([]); setFindIndex(0); }} />}
 
       <div className="reader-body">
-        {navTab && <ReaderNav pane={sourceApi} pages={source.pages} current={page} versionKey={source.versionId} onJump={(target, fraction) => jumpTo(target, fraction)} onClose={() => setNavTab(null)} />}
+        {navTab && <ReaderNav pane={activeSide === "translated" ? transApi : sourceApi} pages={source.pages} current={page} versionKey={`${activeSide}:${activeSide === "translated" ? translated?.versionId ?? "" : source.versionId}`} onJump={(target, fraction) => jumpTo(target, fraction)} onClose={() => setNavTab(null)} />}
         <div className={`panes mode-${mode}`} ref={panesRef}>
           {(mode === "source" || mode === "dual") && (
             <PdfPane key="source" bytes={source.bytes} scale={scale} annotations={sourceAnnotations}
               initialPage={page} initialFraction={positionRef.current.fraction} side="source" loadOcr={loadOcr} textRevision={textRevision} registerApi={registerSource}
+              findMatches={activeSide === "source" ? findMatches : undefined} activeMatchIndex={activeSide === "source" ? findIndex : undefined}
               onNativeText={(index, hasText) => setNativeText((all) => all[index] === hasText ? all : { ...all, [index]: hasText })}
               onHighlightClick={(annotation, anchor) => { setActiveAnnotation({ annotation, ...anchor }); setAnnotationDraft(annotation.comment || ""); }}
               onAreaSelect={(selected) => { setSelection({ ...selected, quote: selected.quote || "（框选区域）" }); setAnnotating(true); }}
               onInternalLink={(target, fraction) => jumpTo(target, fraction)}
-              onSelect={(selected) => { activePane.current = "source"; setSelection(selected); setAnnotating(false); }}
-              onScrollFraction={(p, fraction) => { activePane.current = "source"; remember(p, fraction); if (mode === "dual") transApi.current?.goTo(p, fraction); }}
+              onSelect={(selected) => { chooseActive("source"); setSelection(selected); setAnnotating(false); }}
+              onScrollFraction={(p, fraction) => { chooseActive("source"); remember(p, fraction); if (mode === "dual") transApi.current?.goTo(p, fraction); }}
               onBlocks={(pageNo, blocks) => { if (blocks.length) api.setBlocks(paper.id, source.versionId, pageNo, blocks).catch(() => undefined); }}
             />
           )}
           {(mode === "translated" || mode === "dual") && translated && (
             <PdfPane key="translated" bytes={translated.bytes} scale={scale} annotations={translatedAnnotations}
               initialPage={page} initialFraction={positionRef.current.fraction} side="translated" registerApi={registerTranslated}
+              findMatches={activeSide === "translated" ? findMatches : undefined} activeMatchIndex={activeSide === "translated" ? findIndex : undefined}
               onHighlightClick={(annotation, anchor) => { setActiveAnnotation({ annotation, ...anchor }); setAnnotationDraft(annotation.comment || ""); }}
               onAreaSelect={(selected) => { setSelection({ ...selected, quote: selected.quote || "（框选区域）" }); setAnnotating(true); }}
               onInternalLink={(target, fraction) => jumpTo(target, fraction)}
-              onSelect={(selected) => { activePane.current = "translated"; setSelection(selected); setAnnotating(false); }}
-              onScrollFraction={(p, fraction) => { activePane.current = "translated"; remember(p, fraction); if (mode === "dual") sourceApi.current?.goTo(p, fraction); }}
+              onSelect={(selected) => { chooseActive("translated"); setSelection(selected); setAnnotating(false); }}
+              onScrollFraction={(p, fraction) => { chooseActive("translated"); remember(p, fraction); if (mode === "dual") sourceApi.current?.goTo(p, fraction); }}
+              onBlocks={(pageNo, blocks) => { if (blocks.length) api.setBlocks(paper.id, translated.versionId, pageNo, blocks).catch(() => undefined); }}
             />
           )}
         </div>
@@ -569,7 +637,7 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
             <p className="annotation-quote">“{activeAnnotation.annotation.quote.slice(0, 160)}…”</p>
             <div className="selection-row">
               {HIGHLIGHT_COLORS.map((color) => <button key={color.key} className={`color-dot ${color.key}`} title={color.label} aria-label={`改为${color.label}`} onClick={async () => { await api.updateAnnotation(activeAnnotation.annotation.id, { color: color.key }); await reloadAnnotations(); setActiveAnnotation(null); }}><span className="sr-only">{color.label}</span></button>)}
-              <button className="tool" title="跳转到原文" onClick={() => { const annotation = activeAnnotation.annotation; setActiveAnnotation(null); remember(annotation.page + 1, annotation.rects[0]?.y ?? 0); if (annotation.version_kind === "translated") { setMode("translated"); transApi.current?.goTo(annotation.page + 1, annotation.rects[0]?.y ?? 0); } else { setMode("source"); sourceApi.current?.goTo(annotation.page + 1, annotation.rects[0]?.y ?? 0); } }}><BookOpen size={14} /><span className="sr-only">跳转</span></button>
+              <button className="tool" title="跳转到原文" onClick={() => { const annotation = activeAnnotation.annotation; setActiveAnnotation(null); remember(annotation.page + 1, annotation.rects[0]?.y ?? 0); if (annotation.version_kind === "translated") { setMode("translated"); chooseActive("translated"); transApi.current?.goTo(annotation.page + 1, annotation.rects[0]?.y ?? 0); } else { setMode("source"); chooseActive("source"); sourceApi.current?.goTo(annotation.page + 1, annotation.rects[0]?.y ?? 0); } }}><BookOpen size={14} /><span className="sr-only">跳转</span></button>
               <button className="tool danger" title="删除高亮" onClick={async () => { await api.deleteAnnotation(activeAnnotation.annotation.id); await reloadAnnotations(); setActiveAnnotation(null); }}><Trash2 size={14} /><span className="sr-only">删除</span></button>
             </div>
             <textarea aria-label="高亮批注内容" rows={2} value={annotationDraft} placeholder="补充批注…" onChange={(event) => setAnnotationDraft(event.target.value)} />
@@ -616,6 +684,7 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
                   <button className={aiBusy ? "chip-action disabled" : "chip-action"} onClick={() => void ask("summary")} disabled={aiBusy}><FileText size={14} />总结本页</button>
                   <button className="chip-action" disabled={aiBusy} onClick={() => void ask("ask", "提炼这篇论文的核心贡献与创新点。")}><Lightbulb size={14} />提炼核心贡献</button>
                   <button ref={contextButton} className="icon-btn" aria-label="上下文设置" aria-expanded={!!contextAnchor} onClick={() => contextAnchor ? setContextAnchor(null) : contextAnchorOf()}><MoreHorizontal size={16} /></button>
+                  <button className="icon-btn" aria-label="清空本篇对话" title="清空本篇对话" disabled={!aiHistory.length || aiBusy} onClick={() => void clearChat()}><Trash2 size={15} /></button>
                 </div>
 
                 {contextAnchor && (
@@ -637,7 +706,8 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
                 )}
 
                 <div className="chat" aria-label="对话记录">
-                  {messages.map((message) => <Exchange key={message.id} message={message} onJump={jumpToSource} onCopy={copyAnswer} onSave={saveAnswer} onExport={exportAnswer} />)}
+                  {messages.map((message) => <Exchange key={message.id} message={message} onJump={jumpToSource} onCopy={copyAnswer} onSave={saveAnswer} onExport={exportAnswer}
+                    onDelete={(id) => void deleteExchange(id)} onRegenerate={(question) => { setAiQuestion(question); void ask("ask", question); }} />)}
                   {live && <Exchange message={{ id: "live", kind: "ask", question: live.question, answer: live.answer, sources: live.sources, warnings: live.warnings }} busy={aiBusy} onJump={jumpToSource} onCopy={copyAnswer} onSave={saveAnswer} onExport={exportAnswer} />}
                   {messages.length === 0 && !live && <div className="chat-empty"><Sparkles size={26} /><p>就这篇论文提问，或从选段直接发起解释与翻译。</p><span className="muted small">回答只依据论文原文片段；引用编号可点击回到原文。</span></div>}
                 </div>
@@ -674,12 +744,14 @@ export default function Reader({ paper, onBack, onChanged, onToast, onToggleNav 
   );
 }
 
-function Exchange({ message, busy, onJump, onCopy, onSave, onExport }: {
+function Exchange({ message, busy, onJump, onCopy, onSave, onExport, onDelete, onRegenerate }: {
   message: ChatMessage; busy?: boolean;
   onJump: (source: Source) => void; onCopy: (text: string) => void;
   onSave: (text: string, sources: Source[]) => void; onExport: (text: string, sources: Source[]) => void;
+  onDelete?: (id: string) => void; onRegenerate?: (question: string) => void;
 }) {
   const sources = message.sources || [];
+  const saved = message.id !== "live";
   return (
     <div className="exchange">
       {message.question && <div className="bubble user">{message.question}</div>}
@@ -689,6 +761,8 @@ function Exchange({ message, busy, onJump, onCopy, onSave, onExport }: {
           <span>阅读助手</span>
           {busy && <Loader2 className="spin" size={13} />}
           <div className="assistant-tools">
+            {saved && message.kind !== "translate" && <button className="icon-btn" aria-label="重新生成" title="重新生成" onClick={() => onRegenerate?.(message.question)}><RotateCcw size={13} /></button>}
+            {saved && <button className="icon-btn" aria-label="删除这条问答" title="删除这条问答" onClick={() => onDelete?.(message.id)}><Trash2 size={13} /></button>}
             <button className="icon-btn" aria-label="复制回答" title="复制回答" onClick={() => onCopy(message.answer)}><Copy size={13} /></button>
             <button className="icon-btn" aria-label="保存到笔记" title="保存到笔记" onClick={() => onSave(message.answer, sources)}><NotebookPen size={13} /></button>
             <button className="icon-btn" aria-label="导出回答" title="导出回答" onClick={() => onExport(message.answer, sources)}><FileText size={13} /></button>
@@ -706,8 +780,9 @@ function SendIcon() {
   return <Send size={14} className="send-icon" />;
 }
 
-function zoomValue(scale: number) {
-  return [0.6, 0.75, 1, 1.15, 1.25, 1.5, 2, 3].includes(scale) ? String(scale) : "current";
+function zoomValue(scale: number, mode: "custom" | "fit-width" | "fit-page") {
+  if (mode !== "custom") return mode;
+  return [0.4, 0.5, 0.75, 1, 1.15, 1.25, 1.5, 2, 3, 4].includes(scale) ? String(scale) : "current";
 }
 
 function statusLabel(status: string) {

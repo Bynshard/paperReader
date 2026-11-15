@@ -136,6 +136,10 @@ async function main() {
   await shot('02-library-inspector-batch');
 
   await page.click('button[aria-label="关闭论文详情"]');
+  await page.getByText('任务中心').click();
+  await page.waitForSelector('.task-center');
+  await shot('17-task-center');
+  await page.click('button[aria-label="关闭任务中心"]');
   await page.getByText('设置与状态').click();
   await page.waitForSelector('.settings-modal');
   await shot('03-settings-general');

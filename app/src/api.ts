@@ -39,6 +39,11 @@ export const api = {
   saveCategory: (input:{id?:string;name:string;parent_id?:string|null}) => bridge().call('save_category',input) as Promise<import('./types').Category>,
   bulkAssign: (input:{paper_ids:string[];category_id?:string;tags:string[]}) => bridge().call('bulk_assign',input),
   bulkUnassign: (input:{paper_ids:string[];category_id?:string;tags:string[]}) => bridge().call('bulk_unassign',input) as Promise<{updated:number;removed:number}>,
+  bulkSetStatus: (paper_ids:string[],status:'unread'|'reading'|'read') => bridge().call('bulk_set_status',{paper_ids,status}) as Promise<{updated:number;status:string}>,
+  bulkTrash: (paper_ids:string[]) => bridge().call('bulk_trash',{paper_ids}) as Promise<{updated:number}>,
+  bulkRestore: (paper_ids:string[]) => bridge().call('bulk_restore',{paper_ids}) as Promise<{updated:number}>,
+  bulkPurge: (paper_ids:string[]) => bridge().call('bulk_purge',{paper_ids}) as Promise<{purged:number;failed:{paper_id:string;error:string}[]}>,
+  emptyTrash: () => bridge().call('empty_trash',{}) as Promise<{purged:number;failed:{paper_id:string;error:string}[]}>,
   folderDelete: (category_id:string) => bridge().call('folder_delete',{category_id}) as Promise<{ok:boolean;deleted:string;parent_id:string|null;reparented:number;papers_unassigned:number}>,
   folderMove: (category_id:string,parent_id:string|null) => bridge().call('folder_move',{category_id,parent_id}) as Promise<import('./types').Category>,
   folderMerge: (source_id:string,target_id:string) => bridge().call('folder_merge',{source_id,target_id}) as Promise<{ok:boolean;papers_moved:number;reparented:number}>,
@@ -61,6 +66,8 @@ export const api = {
   aiPreferences: () => bridge().aiAction ? bridge().aiAction!('preferences') as Promise<{provider:string}> : Promise.resolve({provider:'api'}),
   aiStatus: () => bridge().aiAction ? bridge().aiAction!('status') as Promise<AiStatus> : Promise.reject(new Error('此功能需要桌面客户端')),
   aiHistory: (paper_id:string) => bridge().call('ai_history',{paper_id}) as Promise<ChatMessage[]>,
+  aiDelete: (chat_id:string) => bridge().call('ai_delete',{chat_id}) as Promise<{deleted:number}>,
+  aiClear: (paper_id:string) => bridge().call('ai_clear',{paper_id}) as Promise<{deleted:number}>,
   aiRun: (input:{paper_id:string;question:string;kind:string;version_id?:string;page?:number;scope?:string;include_history?:boolean;request_id:string}) =>
     bridge().aiAction ? bridge().aiAction!('run',input) as Promise<{answer:string;sources:Source[];warnings?:string[]}> :
     (input.kind==='translate'?bridge().call('translate_text',{text:input.question},300000).then(v=>({answer:(v as {text:string}).text,sources:[]})):bridge().call('explain',input,300000) as Promise<{answer:string;sources:Source[];warnings?:string[]}>),

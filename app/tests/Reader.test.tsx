@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Reader from '../src/Reader';
 import type { Paper } from '../src/types';
@@ -90,5 +90,26 @@ describe('reader regression',()=>{
     expect(panes.current.sourceApi.getOutline).toHaveBeenCalled();
     fireEvent.click(screen.getByText('Motivation'));
     expect(panes.current.sourceApi.goTo).toHaveBeenCalledWith(2,.1,undefined);
+  });
+  it('searches the translated pane when it is the active side',async()=>{
+    mount();await screen.findByText('select translated');
+    fireEvent.click(screen.getByText('select translated'));
+    fireEvent.keyDown(window,{key:'f',ctrlKey:true});
+    const input=await screen.findByLabelText('文内查找关键词');
+    fireEvent.change(input,{target:{value:'显存'}});
+    fireEvent.keyDown(input,{key:'Enter'});
+    await waitFor(()=>expect(panes.current.translatedApi.find).toHaveBeenCalled());
+    expect(panes.current.sourceApi.find).not.toHaveBeenCalled();
+  });
+  it('persists translated text blocks so cross-language retrieval can use them',async()=>{
+    mount();await screen.findByText('select translated');
+    act(()=>{panes.current.translated.onBlocks(2,[{bbox:[1,2,3,4],text:'译文段落'}]);});
+    await waitFor(()=>expect(mocks.setBlocks).toHaveBeenCalledWith('paper','trans',2,expect.any(Array)));
+  });
+  it('applies fit-width to the active pane and keeps the zoom mode responsive',async()=>{
+    mount();await screen.findByText('select source');
+    fireEvent.click(screen.getByRole('button',{name:'一键适应页宽'}));
+    await waitFor(()=>expect(panes.current.sourceApi.fit).toHaveBeenCalledWith('width'));
+    await waitFor(()=>expect(panes.current.source.scale).toBe(1.2));
   });
 });

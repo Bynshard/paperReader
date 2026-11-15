@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, Columns3, FileDown, Inbox, LayoutGrid, MoreHorizontal, Search, Star, Table2, Trash2, Upload, X } from "lucide-react";
+import { ChevronDown, Columns3, FileDown, Inbox, LayoutGrid, MoreHorizontal, Search, Star, Table2, Trash2, Undo2, Upload, X } from "lucide-react";
 import PaperTable, { COLUMN_LABELS, DEFAULT_COLUMN_VISIBILITY, HIDEABLE_COLUMNS, type PaperTableActions } from "./PaperTable";
 import type { ColumnSizingState, VisibilityState } from "@tanstack/react-table";
 import FloatingLayer from "./FloatingLayer";
@@ -34,6 +34,11 @@ type Props = {
   onCycleStatus: (p: PaperSummary) => void;
   onMarkMany?: (ids: string[], status: "read" | "unread") => void;
   onTranslateMany?: (ids: string[]) => void;
+  onTrashMany?: (ids: string[]) => void;
+  onRestoreMany?: (ids: string[]) => void;
+  onPurgeMany?: (ids: string[]) => void;
+  onEmptyTrash?: () => void;
+  trashed?: boolean;
   onImported?: (message: string) => void;
   importing: boolean;
   importProgress?: string;
@@ -58,7 +63,7 @@ const PRESETS: Record<string, Record<string, boolean>> = {
 };
 
 export default function Library(props: Props) {
-  const { papers, total, loading, error, sort, onSort, offset, pageSize, onOffset, query, onQuery, onOpen, onInspect, inspectedId, onImport, onZotero, onToggleFavorite, onTrash, onRestore, onPurge, onExport, onBulkExport, onEdit, onOrganize, onShortNote, onRefreshCitations, onTag, onCycleStatus, onMarkMany, onTranslateMany, importing, importProgress } = props;
+  const { papers, total, loading, error, sort, onSort, offset, pageSize, onOffset, query, onQuery, onOpen, onInspect, inspectedId, onImport, onZotero, onToggleFavorite, onTrash, onRestore, onPurge, onExport, onBulkExport, onEdit, onOrganize, onShortNote, onRefreshCitations, onTag, onCycleStatus, onMarkMany, onTranslateMany, onTrashMany, onRestoreMany, onPurgeMany, onEmptyTrash, trashed, importing, importProgress } = props;
   const [view, setView] = useState<"table" | "cards">(() => { try { return localStorage.getItem("moonlight-library-view-v1") === "cards" ? "cards" : "table"; } catch { return "table"; } });
   useEffect(() => { try { localStorage.setItem("moonlight-library-view-v1", view); } catch { /* ignore */ } }, [view]);
   const initial = useMemo(initialPrefs, []);
@@ -91,7 +96,7 @@ export default function Library(props: Props) {
   const alive = useRef(true);
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; stop.current = true; }; }, []);
-  useEffect(() => { const present = new Set(papers.filter((paper) => !paper.deleted).map((paper) => paper.id)); setSelected((old) => new Set([...old].filter((id) => present.has(id)))); }, [papers]);
+  useEffect(() => { const present = new Set(papers.map((paper) => paper.id)); setSelected((old) => new Set([...old].filter((id) => present.has(id)))); }, [papers]);
 
   const refresh = async (ids: string[], force = false) => {
     if (refreshing || !onRefreshCitations) return;
@@ -135,7 +140,7 @@ export default function Library(props: Props) {
   };
   const anchorOf = (element: HTMLElement | null) => { const rect = element?.getBoundingClientRect(); return rect ? { x: rect.left + rect.width / 2, y: rect.bottom } : { x: 12, y: 60 }; };
 
-  const toggleAll = (checked: boolean) => setSelected(checked ? new Set(papers.filter((paper) => !paper.deleted).map((paper) => paper.id)) : new Set());
+  const toggleAll = (checked: boolean) => setSelected(checked ? new Set(papers.map((paper) => paper.id)) : new Set());
   const toggleOne = (id: string, checked: boolean) => setSelected((old) => { const next = new Set(old); if (checked) next.add(id); else next.delete(id); return next; });
 
   const tableActions: PaperTableActions = {
@@ -223,7 +228,7 @@ export default function Library(props: Props) {
       ) : (
         <>
           <div className="cards-tools">
-            <label><input type="checkbox" aria-label="选择当前页论文" checked={papers.some((paper) => !paper.deleted) && papers.filter((paper) => !paper.deleted).every((paper) => selected.has(paper.id))} onChange={(event) => toggleAll(event.target.checked)} />选择当前页</label>
+            <label><input type="checkbox" aria-label="选择当前页论文" checked={papers.length > 0 && papers.every((paper) => selected.has(paper.id))} onChange={(event) => toggleAll(event.target.checked)} />选择当前页</label>
           </div>
           <div className="paper-list" ref={scrollRef} aria-label="论文列表">
             <div style={{ height: virtual.getTotalSize(), width: "100%", position: "relative" }}>
@@ -235,7 +240,7 @@ export default function Library(props: Props) {
                       onClick={(event) => { if (event.detail > 1) return; if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; previewLater(paper); }}
                       onDoubleClick={(event) => { if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; clearTimeout(inspectTimer.current); onOpen(paper); }}
                       onContextMenu={(event) => { event.preventDefault(); setMenu({ paper, x: event.clientX, y: event.clientY }); }}>
-                      {!paper.deleted && <input type="checkbox" aria-label={`选择论文 ${paper.title}`} checked={selected.has(paper.id)} onChange={(event) => toggleOne(paper.id, event.target.checked)} />}
+                      {<input type="checkbox" aria-label={`选择论文 ${paper.title}`} checked={selected.has(paper.id)} onChange={(event) => toggleOne(paper.id, event.target.checked)} />}
                       <button className={`icon-btn star ${paper.favorite ? "on" : ""}`} aria-label={paper.favorite ? "取消星标" : "星标"} title="星标" onClick={() => onToggleFavorite(paper)}><Star size={16} fill={paper.favorite ? "currentColor" : "none"} /></button>
                       <div className="paper-main">
                         <div className="paper-title">{paper.title}</div>
@@ -279,15 +284,21 @@ export default function Library(props: Props) {
       {selected.size > 0 && (
         <div className="batch-bar" role="toolbar" aria-label="批量操作">
           <span className="batch-count">已选 {selected.size} 篇</span>
-          <button className="btn tiny" disabled={!onOrganize} onClick={() => onOrganize?.([...selected])}>分类 / 标签</button>
-          <button className="btn tiny" disabled={refreshing || !onRefreshCitations} onClick={() => void refresh([...selected])}>更新引用量</button>
-          {refreshing && <button className="btn tiny" onClick={() => { stop.current = true; }}>停止</button>}
-          <button className="btn tiny" disabled={!onMarkMany} onClick={() => onMarkMany?.([...selected], "read")}>标记已读</button>
-          <button className="btn tiny" disabled={!onMarkMany} onClick={() => onMarkMany?.([...selected], "unread")}>标记未读</button>
-          <button className="btn tiny" disabled={!onTranslateMany} onClick={() => onTranslateMany?.([...selected])}>批量翻译</button>
-          <button className="btn tiny" disabled={!onBulkExport} onClick={() => onBulkExport?.([...selected], "bibtex")}><FileDown size={13} />导出 BibTeX</button>
-          <button className="btn tiny" disabled={!onBulkExport} onClick={() => onBulkExport?.([...selected], "ris")}><FileDown size={13} />导出 RIS</button>
-          <button className="btn tiny danger" onClick={() => { for (const id of selected) { const paper = papers.find((item) => item.id === id); if (paper) onTrash(paper); } setSelected(new Set()); }}><Trash2 size={13} />移到回收站</button>
+          {trashed ? <>
+            <button className="btn tiny" disabled={!onRestoreMany} onClick={() => { onRestoreMany?.([...selected]); setSelected(new Set()); }}><Undo2 size={13} />恢复所选</button>
+            <button className="btn tiny danger" disabled={!onPurgeMany} onClick={() => { onPurgeMany?.([...selected]); setSelected(new Set()); }}><Trash2 size={13} />永久删除</button>
+            <button className="btn tiny danger" disabled={!onEmptyTrash} onClick={() => { onEmptyTrash?.(); setSelected(new Set()); }}>清空回收站</button>
+          </> : <>
+            <button className="btn tiny" disabled={!onOrganize} onClick={() => onOrganize?.([...selected])}>分类 / 标签</button>
+            <button className="btn tiny" disabled={refreshing || !onRefreshCitations} onClick={() => void refresh([...selected])}>更新引用量</button>
+            {refreshing && <button className="btn tiny" onClick={() => { stop.current = true; }}>停止</button>}
+            <button className="btn tiny" disabled={!onMarkMany} onClick={() => onMarkMany?.([...selected], "read")}>标记已读</button>
+            <button className="btn tiny" disabled={!onMarkMany} onClick={() => onMarkMany?.([...selected], "unread")}>标记未读</button>
+            <button className="btn tiny" disabled={!onTranslateMany} onClick={() => onTranslateMany?.([...selected])}>批量翻译</button>
+            <button className="btn tiny" disabled={!onBulkExport} onClick={() => onBulkExport?.([...selected], "bibtex")}><FileDown size={13} />导出 BibTeX</button>
+            <button className="btn tiny" disabled={!onBulkExport} onClick={() => onBulkExport?.([...selected], "ris")}><FileDown size={13} />导出 RIS</button>
+            <button className="btn tiny danger" disabled={!onTrashMany} onClick={() => { onTrashMany?.([...selected]); setSelected(new Set()); }}><Trash2 size={13} />移到回收站</button>
+          </>}
           <button className="btn tiny ghost" onClick={() => setSelected(new Set())}>取消选择</button>
         </div>
       )}

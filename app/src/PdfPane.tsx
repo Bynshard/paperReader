@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import * as pdfjsLib from "pdfjs-dist";
 import "pdfjs-dist/web/pdf_viewer.css";
@@ -19,8 +19,9 @@ export type PaneApi = {
   getPosition: () => { page: number; fraction: number };
   parsePage: (page:number, options?:{forceOcr?:boolean;signal?:AbortSignal;progress?:(message:string)=>void}) => Promise<Block[]>;
   getOutline: () => Promise<OutlineItem[]>;
-  find: (query: string) => Promise<FindMatch[]>;
+  find: (query: string, options?: { caseSensitive?: boolean }) => Promise<FindMatch[]>;
   fit: (mode: "width" | "page") => number;
+  prepareZoom?: (focal?: { clientX: number; clientY: number }) => void;
   thumbnail: (page: number, width?: number) => Promise<string>;
 };
 type Props = {
@@ -43,6 +44,9 @@ type Props = {
   onAreaSelect?: (selection: Selection) => void;
   /** Internal PDF link / outline destination. */
   onInternalLink?: (page: number, fraction: number) => void;
+  /** All in-document find hits (rendered as persistent highlights). */
+  findMatches?: FindMatch[];
+  activeMatchIndex?: number;
 };
 
 type LinkBox = { left: number; top: number; width: number; height: number; url?: string; dest?: unknown };
@@ -75,7 +79,37 @@ function groupBlocks(items: any[], viewport: any): Block[] {
   return blocks;
 }
 
-const PageView = memo(function PageView({ doc, index, scale, annotations, onSize, onBlocks, loadOcr, textRevision, focus, onNativeText, onHighlightClick, onLink }: {
+type CachedPage = {
+  doc: pdfjsLib.PDFDocumentProxy;
+  index: number;
+  textRevision?: number;
+  page: pdfjsLib.PDFPageProxy;
+  natural: { width: number; height: number };
+  content: any;
+  native: Block[];
+  rawLinks: any[];
+  saved: Block[];
+};
+
+function computeLinks(rawLinks: any[], viewport: pdfjsLib.PageViewport): LinkBox[] {
+  const boxes: LinkBox[] = [];
+  for (const annotation of rawLinks) {
+    if (annotation?.subtype !== "Link" || !Array.isArray(annotation.rect)) continue;
+    const [x1, y1, x2, y2] = viewport.convertToViewportRectangle(annotation.rect);
+    if (![x1, y1, x2, y2].every(Number.isFinite)) continue;
+    boxes.push({
+      left: Math.min(x1, x2),
+      top: Math.min(y1, y2),
+      width: Math.abs(x2 - x1),
+      height: Math.abs(y2 - y1),
+      url: annotation.url,
+      dest: annotation.dest,
+    });
+  }
+  return boxes;
+}
+
+const PageView = memo(function PageView({ doc, index, scale, annotations, onSize, onBlocks, loadOcr, textRevision, focus, onNativeText, onHighlightClick, onLink, findHits, activeMatchIndex }: {
   doc: pdfjsLib.PDFDocumentProxy; index: number; scale: number; annotations: Annotation[];
   onSize: (index: number, width: number, height: number) => void;
   onBlocks: (index: number, blocks: Block[]) => void;
@@ -85,40 +119,82 @@ const PageView = memo(function PageView({ doc, index, scale, annotations, onSize
   onNativeText?: (index: number, hasText: boolean) => void;
   onHighlightClick?: (annotation: Annotation, x: number, y: number) => void;
   onLink?: (dest: unknown) => void;
+  findHits?: { bbox: number[]; globalIndex: number }[];
+  activeMatchIndex?: number;
 }) {
   const mount = useRef<HTMLDivElement>(null);
+  const cacheRef = useRef<CachedPage | null>(null);
   const [error, setError] = useState("");
   const [links, setLinks] = useState<LinkBox[]>([]);
+
+  useEffect(() => () => {
+    const mountEl = mount.current;
+    if (mountEl) {
+      for (const node of mountEl.querySelectorAll("canvas")) {
+        node.width = 0;
+        node.height = 0;
+      }
+      mountEl.replaceChildren();
+    }
+    cacheRef.current?.page?.cleanup();
+    cacheRef.current = null;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     let task: pdfjsLib.RenderTask | undefined;
     let textTask: pdfjsLib.TextLayer | undefined;
-    let page: pdfjsLib.PDFPageProxy | undefined;
-    // Each render owns its canvas. An old, cancelled task can never draw
-    // into a canvas reused by a new zoom level.
+    // Double-buffer: keep any previously rendered canvas stretched at the new
+    // CSS dimensions until the replacement bitmap & text layer finish drawing,
+    // avoiding white flashes during wheel/pinch zoom.
     const canvas = document.createElement("canvas");
     const text = document.createElement("div");
     text.className = "textLayer";
     setError("");
-    setLinks([]);
-    const run = async () => {
-      page = await doc.getPage(index + 1);
-      if (cancelled) return;
-      const natural = page.getViewport({ scale: 1 });
-      onSize(index, natural.width, natural.height);
-      const viewport = page.getViewport({ scale });
-      // PDF link annotations (citations, figures, URLs) stay clickable.
-      const rawLinks = typeof page.getAnnotations === "function" ? await page.getAnnotations({ intent: "display" }).catch(() => [] as any[]) : [];
-      if (!cancelled && Array.isArray(rawLinks)) {
-        const boxes: LinkBox[] = [];
-        for (const annotation of rawLinks) {
-          if (annotation?.subtype !== "Link" || !Array.isArray(annotation.rect)) continue;
-          const [x1, y1, x2, y2] = viewport.convertToViewportRectangle(annotation.rect);
-          if (![x1, y1, x2, y2].every(Number.isFinite)) continue;
-          boxes.push({ left: Math.min(x1, x2), top: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1), url: annotation.url, dest: annotation.dest });
-        }
-        if (boxes.length) setLinks(boxes);
+    const existingCache = cacheRef.current;
+    if (existingCache && existingCache.doc === doc && existingCache.index === index) {
+      const existingCanvas = mount.current?.querySelector("canvas");
+      if (existingCanvas) {
+        existingCanvas.style.width = `${existingCache.natural.width * scale}px`;
+        existingCanvas.style.height = `${existingCache.natural.height * scale}px`;
       }
+      if (existingCache.rawLinks.length) {
+        setLinks(computeLinks(existingCache.rawLinks, existingCache.page.getViewport({ scale })));
+      }
+    } else {
+      setLinks([]);
+      if (existingCache) {
+        existingCache.page?.cleanup();
+        cacheRef.current = null;
+      }
+    }
+
+    const run = async () => {
+      let cached = cacheRef.current;
+      if (!cached || cached.doc !== doc || cached.index !== index || cached.textRevision !== textRevision) {
+        const reusePage = cached && cached.doc === doc && cached.index === index ? cached.page : undefined;
+        const page = reusePage ?? await doc.getPage(index + 1);
+        if (cancelled) { if (!reusePage) page.cleanup(); return; }
+        const naturalViewport = page.getViewport({ scale: 1 });
+        const natural = { width: naturalViewport.width, height: naturalViewport.height };
+        onSize(index, natural.width, natural.height);
+        const rawLinks = cached && reusePage
+          ? cached.rawLinks
+          : (typeof page.getAnnotations === "function" ? await page.getAnnotations({ intent: "display" }).catch(() => [] as any[]) : []);
+        if (cancelled) { if (!reusePage) page.cleanup(); return; }
+        const content = cached && reusePage ? cached.content : await page.getTextContent();
+        if (cancelled) { if (!reusePage) page.cleanup(); return; }
+        const native = cached && reusePage ? cached.native : groupBlocks(content.items, naturalViewport);
+        const saved = loadOcr ? await loadOcr(index) : [];
+        if (cancelled) { if (!reusePage) page.cleanup(); return; }
+        cached = { doc, index, textRevision, page, natural, content, native, rawLinks, saved };
+        cacheRef.current = cached;
+        onNativeText?.(index, native.length > 0 || saved.length > 0);
+        if (native.length && !saved.length) onBlocks(index, native);
+      }
+
+      const viewport = cached.page.getViewport({ scale });
+      if (cached.rawLinks.length) setLinks(computeLinks(cached.rawLinks, viewport));
       // Bound actual backing pixels, not just DPR. At 300% on a 2x display
       // an ordinary letter page otherwise allocates ~67 MiB per canvas.
       // CSS/text/annotation coordinates retain the requested zoom level.
@@ -129,47 +205,53 @@ const PageView = memo(function PageView({ doc, index, scale, annotations, onSize
       canvas.height = Math.max(1, Math.floor(viewport.height * dpr));
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
-      mount.current?.append(canvas, text);
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("无法创建 PDF 画布");
-      task = page.render({ canvasContext: ctx, viewport, transform: dpr === 1 ? undefined : [dpr, 0, 0, dpr, 0, 0] });
-      const content = await page.getTextContent();
-      if (cancelled) return;
-      const native=groupBlocks(content.items,natural);
-      const saved=loadOcr?await loadOcr(index):[];
-      if(cancelled)return;
-      onNativeText?.(index, native.length > 0 || saved.length > 0);
-      if(native.length&&!saved.length)onBlocks(index,native);
-      if(saved.length){
-        const measure=document.createElement('canvas').getContext('2d');
-        for(const block of saved){
-          const [x,y,right,bottom]=block.bbox;
-          if(block.bbox.length!==4||!block.bbox.every(Number.isFinite)||right<=x||bottom<=y)continue;
-          const span=document.createElement('span'),font=Math.max(1,(bottom-y)*scale);
-          span.textContent=block.text;span.dataset.ocr='true';
-          Object.assign(span.style,{left:`${x*scale}px`,top:`${y*scale}px`,fontSize:`${font}px`,fontFamily:'sans-serif',height:`${font}px`,lineHeight:'1'});
-          if(measure){measure.font=`${font}px sans-serif`;span.style.transform=`scaleX(${(right-x)*scale/Math.max(1,measure.measureText(block.text).width)})`;}
+      task = cached.page.render({ canvasContext: ctx, viewport, transform: dpr === 1 ? undefined : [dpr, 0, 0, dpr, 0, 0] });
+      if (cached.saved.length) {
+        const measure = document.createElement('canvas').getContext('2d');
+        for (const block of cached.saved) {
+          const [x, y, right, bottom] = block.bbox;
+          if (block.bbox.length !== 4 || !block.bbox.every(Number.isFinite) || right <= x || bottom <= y) continue;
+          const span = document.createElement('span'), font = Math.max(1, (bottom - y) * scale);
+          span.textContent = block.text; span.dataset.ocr = 'true';
+          Object.assign(span.style, { left: `${x * scale}px`, top: `${y * scale}px`, fontSize: `${font}px`, fontFamily: 'sans-serif', height: `${font}px`, lineHeight: '1' });
+          if (measure) { measure.font = `${font}px sans-serif`; span.style.transform = `scaleX(${(right - x) * scale / Math.max(1, measure.measureText(block.text).width)})`; }
           text.append(span);
         }
       }
-      if(native.length&&!saved.length)textTask = new pdfjsLib.TextLayer({ textContentSource: content, container: text, viewport });
+      if (cached.native.length && !cached.saved.length) {
+        textTask = new pdfjsLib.TextLayer({ textContentSource: cached.content, container: text, viewport });
+      }
       await Promise.all([task.promise, textTask?.render()]);
       if (!cancelled) {
         canvas.dataset.rendered = "true";
         canvas.dataset.scale = String(scale);
+        const mountEl = mount.current;
+        if (mountEl) {
+          for (const prev of mountEl.querySelectorAll("canvas")) {
+            prev.width = 0;
+            prev.height = 0;
+          }
+          mountEl.replaceChildren(canvas, text);
+        }
       }
     };
     void run().catch((e) => {
       if (!cancelled && e?.name !== "RenderingCancelledException" && e?.name !== "AbortException") setError(String(e.message || e));
-    }).finally(() => {
-      if (cancelled) { canvas.width = 0; canvas.height = 0; page?.cleanup(); }
     });
     return () => {
       cancelled = true;
-      task?.cancel(); textTask?.cancel();
-      canvas.remove(); text.remove();
-      if (task) void task.promise.catch(() => undefined).finally(() => { canvas.width = 0; canvas.height = 0; page?.cleanup(); });
-      else { canvas.width = 0; canvas.height = 0; page?.cleanup(); }
+      task?.cancel();
+      textTask?.cancel();
+      const releaseOffscreen = () => {
+        if (!canvas.isConnected) {
+          canvas.width = 0;
+          canvas.height = 0;
+        }
+      };
+      if (task) void task.promise.catch(() => undefined).finally(releaseOffscreen);
+      else releaseOffscreen();
     };
   }, [doc, index, scale, onSize, onBlocks, loadOcr, textRevision, onNativeText, onLink]);
   return <>
@@ -182,10 +264,21 @@ const PageView = memo(function PageView({ doc, index, scale, annotations, onSize
     </div>}
     <div className="highlightLayer">
       {annotations.flatMap((a) => a.rects.map((r, i) => <div key={`${a.id}:${i}`} className={`highlight ${a.color}`} title={a.comment || a.quote} onClick={(event) => { event.stopPropagation(); onHighlightClick?.(a, event.clientX, event.clientY); }} style={{ left: `${r.x * 100}%`, top: `${r.y * 100}%`, width: `${r.w * 100}%`, height: `${r.h * 100}%` }} />))}
+      {findHits?.map((hit) => hit.bbox.length === 4 && <div key={`find-${hit.globalIndex}`} className={`find-hit ${activeMatchIndex === hit.globalIndex ? "on" : ""}`} style={{ left: hit.bbox[0] * scale, top: hit.bbox[1] * scale, width: Math.max(2, (hit.bbox[2] - hit.bbox[0]) * scale), height: Math.max(2, (hit.bbox[3] - hit.bbox[1]) * scale) }} />)}
       {focus && focus.length === 4 && <div className="evidence-focus" style={{ left: focus[0]*scale, top: focus[1]*scale, width: (focus[2]-focus[0])*scale, height: (focus[3]-focus[1])*scale }} />}
     </div>
   </>;
 });
+
+type ZoomAnchor = {
+  fromScale: number;
+  pageIdx: number;
+  offsetWithinPage: number;
+  viewY: number;
+  dxFromCenter: number;
+  viewX: number;
+  keepTop: boolean;
+};
 
 export default function PdfPane(props: Props) {
   const { bytes, scale, annotations, registerApi, side } = props;
@@ -200,6 +293,13 @@ export default function PdfPane(props: Props) {
   const frame = useRef(0);
   const [error, setError] = useState("");
   const [focus, setFocus] = useState<{ page: number; bbox: number[] } | null>(null);
+  const prevScale = useRef(scale);
+  const zoomAnchor = useRef<ZoomAnchor | null>(null);
+  const pendingZoomScroll = useRef<{ top: number; left: number } | null>(null);
+  const lastScroll = useRef({ top: 0, left: 0 });
+  const [spacePan, setSpacePan] = useState(false);
+  const [panning, setPanning] = useState(false);
+  const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const virtual = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: doc?.numPages ?? 0, getScrollElement: () => scroll.current,
     estimateSize: (i) => (sizes.current.get(i)?.h ?? natural.h) * scale,
@@ -210,6 +310,7 @@ export default function PdfPane(props: Props) {
   useEffect(() => {
     let cancelled = false;
     setDoc(null); setError(""); programmatic.current=true; sizes.current.clear(); indexed.current.clear();
+    zoomAnchor.current = null; pendingZoomScroll.current = null; prevScale.current = state.current.scale;
     const task = pdfjsLib.getDocument({ data: bytes.slice() });
     void task.promise.then(async (document) => {
       const first = await document.getPage(1);
@@ -220,6 +321,7 @@ export default function PdfPane(props: Props) {
   }, [bytes]);
   const onSize = useCallback((index: number, w: number, h: number) => {
     const previous = sizes.current.get(index);
+    if (previous?.w === w && previous?.h === h) return;
     sizes.current.set(index, { w, h });
     state.current.virtual.resizeItem(index, h * state.current.scale);
     if (previous?.w !== w) setSizeRevision((revision) => revision + 1);
@@ -236,6 +338,68 @@ export default function PdfPane(props: Props) {
     const item = items.find((i) => i.end > offset) ?? items.at(-1);
     return item ? { page: item.index+1, fraction: Math.max(0, Math.min(1, (offset-item.start)/item.size)) } : { page: 1, fraction: 0 };
   }, []);
+  const stageWidthFor = useCallback((targetScale: number) => {
+    const el = scroll.current;
+    let maxW = state.current.natural.w;
+    for (const size of sizes.current.values()) if (size.w > maxW) maxW = size.w;
+    return Math.max(el?.clientWidth ?? 0, maxW * targetScale + 32);
+  }, []);
+  const captureZoomAnchor = useCallback((focal?: { clientX: number; clientY: number }, explicitScale?: number): ZoomAnchor | null => {
+    const el = scroll.current;
+    const { virtual: v, doc: d, scale: currentScale } = state.current;
+    if (!el || !d) return null;
+    const fromScale = explicitScale ?? currentScale;
+    const rect = el.getBoundingClientRect();
+    const inside = !!focal &&
+      focal.clientX >= rect.left && focal.clientX <= rect.right &&
+      focal.clientY >= rect.top && focal.clientY <= rect.bottom;
+    const scrollTopNow = explicitScale !== undefined ? lastScroll.current.top : el.scrollTop;
+    const scrollLeftNow = explicitScale !== undefined ? lastScroll.current.left : el.scrollLeft;
+    const keepTop = !inside && scrollTopNow < 12;
+    const viewX = inside && focal ? focal.clientX - rect.left : el.clientWidth / 2;
+    const viewY = inside && focal ? focal.clientY - rect.top : (keepTop ? 0 : el.clientHeight / 2);
+    const contentY = scrollTopNow + viewY;
+    const items = v.getVirtualItems();
+    const match =
+      items.find((item) => contentY >= item.start && contentY <= item.end) ??
+      items.find((item) => item.end >= contentY) ??
+      items[0];
+    const pageIdx = match ? match.index : Math.max(0, position().page - 1);
+    const itemStart = match ? match.start : 18;
+    const oldStageW = stageWidthFor(fromScale);
+    const dxFromCenter = (scrollLeftNow + viewX) - oldStageW / 2;
+    return {
+      fromScale,
+      pageIdx,
+      offsetWithinPage: contentY - itemStart,
+      viewY,
+      dxFromCenter,
+      viewX,
+      keepTop,
+    };
+  }, [position, stageWidthFor]);
+  const prepareZoom = useCallback((focal?: { clientX: number; clientY: number }) => {
+    zoomAnchor.current = captureZoomAnchor(focal);
+  }, [captureZoomAnchor]);
+  useLayoutEffect(() => {
+    const anchor = zoomAnchor.current;
+    zoomAnchor.current = null;
+    const element = scroll.current;
+    if (!anchor || !element) { prevScale.current = scale; return; }
+    const ratio = scale / anchor.fromScale;
+    if (!Number.isFinite(ratio) || Math.abs(ratio - 1) < 0.001) { prevScale.current = scale; return; }
+    virtual.measure();
+    const offset = virtual.getOffsetForIndex(anchor.pageIdx, "start")?.[0];
+    const itemTop = offset ?? 18;
+    const targetTop = anchor.keepTop ? 0 : itemTop + anchor.offsetWithinPage * ratio - anchor.viewY;
+    const stageWidth = stageWidthFor(scale);
+    const targetLeft = stageWidth / 2 + anchor.dxFromCenter * ratio - anchor.viewX;
+    programmatic.current = true;
+    element.scrollTop = Math.max(0, targetTop);
+    element.scrollLeft = Math.max(0, targetLeft);
+    lastScroll.current = { top: element.scrollTop, left: element.scrollLeft };
+    prevScale.current = scale;
+  }, [scale, virtual, stageWidthFor]);
   const goTo = useCallback((page: number, fraction = 0, bbox?: number[]) => {
     const { virtual: v, doc: d, natural: n } = state.current;
     if (!d || !scroll.current) return;
@@ -244,8 +408,10 @@ export default function PdfPane(props: Props) {
     const f = bbox?.length === 4 ? Math.max(0, (bbox[1]-24)/height) : fraction;
     const offset = v.getOffsetForIndex(index, "start")?.[0];
     if (offset === undefined) return;
+    const targetTop = offset + Math.max(0, Math.min(1, f))*height*state.current.scale;
     programmatic.current = true;
-    v.scrollToOffset(offset + Math.max(0, Math.min(1, f))*height*state.current.scale);
+    v.scrollToOffset(targetTop);
+    lastScroll.current = { top: targetTop, left: scroll.current.scrollLeft };
     if (bbox?.length === 4) setFocus({ page: index, bbox });
     // Never invoke onPageChange from here: the other pane may be the caller.
   }, []);
@@ -299,10 +465,11 @@ export default function PdfPane(props: Props) {
       latest.current.onInternalLink?.(pageIndex + 1, fraction);
     } catch { /* malformed destination */ }
   }, []);
-  const find = useCallback(async (query: string): Promise<FindMatch[]> => {
+  const find = useCallback(async (query: string, options: { caseSensitive?: boolean } = {}): Promise<FindMatch[]> => {
     const document = state.current.doc;
-    const needle = query.trim().toLowerCase();
-    if (!document || !needle) return [];
+    const rawNeedle = query.trim();
+    if (!document || !rawNeedle) return [];
+    const needle = options.caseSensitive ? rawNeedle : rawNeedle.toLowerCase();
     const matches: FindMatch[] = [];
     for (let pageNumber = 1; pageNumber <= document.numPages && matches.length < 300; pageNumber++) {
       const page = await document.getPage(pageNumber);
@@ -317,7 +484,7 @@ export default function PdfPane(props: Props) {
         text += item.str + " ";
         if (bbox) spans.push({ start, end: start + item.str.length, bbox });
       }
-      const haystack = text.toLowerCase();
+      const haystack = options.caseSensitive ? text : text.toLowerCase();
       let from = 0, pageHits = 0;
       while (pageHits < 20) {
         const hit = haystack.indexOf(needle, from);
@@ -336,12 +503,13 @@ export default function PdfPane(props: Props) {
   const fit = useCallback((mode: "width" | "page") => {
     const element = scroll.current;
     if (!element) return state.current.scale;
-    const { w, h } = state.current.natural;
-    const width = Math.max(240, element.clientWidth - 36);
-    const height = Math.max(240, element.clientHeight - 36);
-    const scale = mode === "width" ? width / w : Math.min(width / w, height / h);
-    return Math.max(0.4, Math.min(3, Number(scale.toFixed(2))));
-  }, []);
+    const index = Math.max(0, position().page - 1);
+    const size = sizes.current.get(index) ?? { w: state.current.natural.w, h: state.current.natural.h };
+    const width = Math.max(200, element.clientWidth - 36);
+    const height = Math.max(200, element.clientHeight - 36);
+    const scale = mode === "width" ? width / size.w : Math.min(width / size.w, height / size.h);
+    return Math.max(0.4, Math.min(4, Number(scale.toFixed(2))));
+  }, [position]);
   const thumbnails = useRef(new Map<string, string>());
   useEffect(() => { thumbnails.current.clear(); }, [bytes]);
   const thumbnail = useCallback(async (pageNumber: number, width = 148) => {
@@ -397,6 +565,44 @@ export default function PdfPane(props: Props) {
     return walk(raw as any[]);
   }, []);
   const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number; page: number } | null>(null);
+  const hover = useRef(false);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || event.repeat) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
+      if (!hover.current) return;
+      event.preventDefault();
+      setSpacePan(true);
+    };
+    const keyup = (event: KeyboardEvent) => { if (event.code === "Space") { setSpacePan(false); pan.current = null; setPanning(false); } };
+    const blur = () => { setSpacePan(false); pan.current = null; setPanning(false); };
+    window.addEventListener("keydown", keydown);
+    window.addEventListener("keyup", keyup);
+    window.addEventListener("blur", blur);
+    return () => { window.removeEventListener("keydown", keydown); window.removeEventListener("keyup", keyup); window.removeEventListener("blur", blur); };
+  }, []);
+  const onPanPointerDown = (event: ReactPointerEvent) => {
+    const element = scroll.current;
+    if (!element || area.current) return;
+    if (!(spacePan || event.button === 1)) return;
+    event.preventDefault();
+    pan.current = { x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop };
+    setPanning(true);
+    element.setPointerCapture?.(event.pointerId);
+  };
+  const onPanPointerMove = (event: ReactPointerEvent) => {
+    const current = pan.current;
+    const element = scroll.current;
+    if (!current || !element) return;
+    element.scrollLeft = current.left - (event.clientX - current.x);
+    element.scrollTop = current.top - (event.clientY - current.y);
+  };
+  const onPanPointerUp = () => {
+    if (!pan.current) return;
+    pan.current = null;
+    setPanning(false);
+  };
   const area = useRef<{ page: number; x0: number; y0: number; bounds: DOMRect } | null>(null);
   const onAreaPointerDown = (event: ReactPointerEvent) => {
     if (!event.altKey || event.button !== 0) return;
@@ -437,9 +643,9 @@ export default function PdfPane(props: Props) {
   useEffect(() => {
     if (!doc) return;
     virtual.measure();
-    registerApi?.({ goTo, getPosition: position, parsePage, getOutline, find, fit, thumbnail });
+    registerApi?.({ goTo, getPosition: position, parsePage, getOutline, find, fit, thumbnail, prepareZoom });
     return () => registerApi?.(null);
-  }, [doc, scale, registerApi, goTo, position, virtual, parsePage, getOutline, find, fit, thumbnail]);
+  }, [doc, scale, registerApi, goTo, position, virtual, parsePage, getOutline, find, fit, thumbnail, prepareZoom]);
   useEffect(() => {
     if (doc) {
       goTo(latest.current.initialPage ?? 1, latest.current.initialFraction ?? 0);
@@ -473,9 +679,14 @@ export default function PdfPane(props: Props) {
   const width = Math.max(natural.w, ...items.map((i) => sizes.current.get(i.index)?.w ?? natural.w))*scale+32;
   const userInput = () => { programmatic.current = false; };
   return <div className={`pane pane-${side}`}>
-    <div className="pane-scroll" ref={scroll} onScroll={handleScroll} onMouseUp={(event) => { if (!event.altKey) handleSelection(); }}
+    <div className={`pane-scroll ${spacePan ? "grab" : ""} ${panning ? "grabbing" : ""}`} ref={scroll} onScroll={handleScroll}
+      onMouseUp={(event) => { if (!event.altKey) handleSelection(); }}
+      onPointerEnter={() => { hover.current = true; }} onPointerLeave={() => { hover.current = false; }}
       onWheelCapture={userInput} onPointerDownCapture={userInput} onKeyDownCapture={userInput}
-      onPointerDown={onAreaPointerDown} onPointerMove={onAreaPointerMove} onPointerUp={onAreaPointerUp}
+      onPointerDown={(event) => { onAreaPointerDown(event); onPanPointerDown(event); }}
+      onPointerMove={(event) => { onAreaPointerMove(event); onPanPointerMove(event); }}
+      onPointerUp={(event) => { onAreaPointerUp(event); onPanPointerUp(); }}
+      onPointerCancel={() => onPanPointerUp()}
       tabIndex={0} aria-label={side === "source" ? "原文 PDF" : "译文 PDF"}>
       {!doc && <div className="pane-loading">{error || "正在载入 PDF…"}</div>}
       <div style={{ height: virtual.getTotalSize(), width: "100%", minWidth: width, position: "relative" }}>
@@ -483,7 +694,9 @@ export default function PdfPane(props: Props) {
           style={{ width: (sizes.current.get(item.index)?.w ?? natural.w)*scale, height: item.size, position: "absolute", top: 0, left: "50%", transform: `translate(-50%, ${item.start}px)`, "--scale-factor": scale } as React.CSSProperties}>
           <PageView doc={doc} index={item.index} scale={scale} annotations={byPage.get(item.index) ?? EMPTY_ANNOTATIONS}
             onSize={onSize} onBlocks={onBlocks} loadOcr={props.loadOcr} textRevision={props.textRevision} focus={focus?.page === item.index ? focus.bbox : undefined}
-            onNativeText={onNativeText} onHighlightClick={onHighlightClick} onLink={resolveDest} />
+            onNativeText={onNativeText} onHighlightClick={onHighlightClick} onLink={resolveDest}
+            findHits={props.findMatches?.map((match, globalIndex) => ({ ...match, globalIndex })).filter((match) => match.page === item.index + 1)}
+            activeMatchIndex={props.activeMatchIndex} />
         </div>)}
       </div>
       {marquee && <div className="area-marquee" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }}><span>{marquee.page} 页 · 框选批注</span></div>}

@@ -169,10 +169,28 @@ export default function App() {
 
   const markMany = async (ids: string[], read_status: "read" | "unread") => {
     try {
-      for (const id of ids) await api.updatePaper(id, { read_status });
+      await api.bulkSetStatus(ids, read_status);
       void client.invalidateQueries({ queryKey: ["papers"] });
       setToast(`已将 ${ids.length} 篇标记为${read_status === "read" ? "已读" : "未读"}`);
     } catch (e) { setToast(`批量更新失败：${(e as Error).message}`); }
+  };
+  const trashMany = async (ids: string[]) => {
+    try { await api.bulkTrash(ids); setToast(`已移入回收站 ${ids.length} 篇`); await reload(); }
+    catch (e) { setToast(`批量移入回收站失败：${(e as Error).message}`); }
+  };
+  const restoreMany = async (ids: string[]) => {
+    try { await api.bulkRestore(ids); setToast(`已恢复 ${ids.length} 篇`); await reload(); }
+    catch (e) { setToast(`批量恢复失败：${(e as Error).message}`); }
+  };
+  const purgeMany = async (ids: string[]) => {
+    if (!confirm(`永久删除所选的 ${ids.length} 篇论文？只删除本应用管理的文件。`)) return;
+    try { const result = await api.bulkPurge(ids); await reload(); setToast(`已永久删除 ${result.purged} 篇${result.failed.length ? `，失败 ${result.failed.length} 篇` : ""}`); }
+    catch (e) { setToast(`批量删除失败：${(e as Error).message}`); }
+  };
+  const emptyTrash = async () => {
+    if (!confirm("清空回收站并永久删除其中的全部论文？只删除本应用管理的文件。")) return;
+    try { const result = await api.emptyTrash(); await reload(); setToast(`回收站已清空：删除 ${result.purged} 篇${result.failed.length ? `，失败 ${result.failed.length} 篇` : ""}`); }
+    catch (e) { setToast(`清空回收站失败：${(e as Error).message}`); }
   };
   const translateMany = async (ids: string[]) => {
     if (!confirm(`为所选 ${ids.length} 篇论文启动整篇翻译？任务会在后台依次排队。`)) return;
@@ -306,10 +324,15 @@ export default function App() {
               onCycleStatus={cycleStatus}
               onMarkMany={markMany}
               onTranslateMany={translateMany}
+              onTrashMany={trashMany}
+              onRestoreMany={restoreMany}
+              onPurgeMany={purgeMany}
+              onEmptyTrash={emptyTrash}
+              trashed={filter.kind === "trash"}
               onImported={(message) => { setToast(message); void reload(); }}
               importing={importing} importProgress={importProgress}
             />
-            {inspect && <Inspector paper={inspect.paper} loading={inspect.loading} error={inspect.error} onClose={() => { inspectRequest.current++; setInspect(null); }} onOpen={(paper) => void open(paper)} onSaved={updatePaper} onToast={setToast} />}
+            {inspect && <Inspector paper={inspect.paper} loading={inspect.loading} error={inspect.error} categories={taxonomy.categories} onClose={() => { inspectRequest.current++; setInspect(null); }} onOpen={(paper) => void open(paper)} onSaved={updatePaper} onToast={setToast} />}
           </div>
         )}
       </main>

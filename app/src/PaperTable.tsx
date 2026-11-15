@@ -74,12 +74,12 @@ export default function PaperTable(props: Props) {
   const columns = useMemo<ColumnDef<PaperSummary>[]>(() => [
     {
       id: "select", header: () => {
-        const selectable = latest.current.papers.filter((paper) => !paper.deleted);
+        const selectable = latest.current.papers;
         const checked = selectable.length > 0 && selectable.every((paper) => latest.current.selected.has(paper.id));
         return <input type="checkbox" aria-label="选择当前页论文" checked={checked} onChange={(event) => latest.current.onSelectAll(event.target.checked)} onClick={(event) => event.stopPropagation()} />;
       },
       size: 64, minSize: 64, maxSize: 90, enableHiding: false, enableResizing: false,
-      cell: ({ row }) => { const paper = row.original; return <div className="table-select">{!paper.deleted && <input type="checkbox" aria-label={`选择论文 ${paper.title}`} checked={latest.current.selected.has(paper.id)} onChange={(event) => latest.current.onSelect(paper.id, event.target.checked)} onClick={(event) => event.stopPropagation()} />}<button className={`icon-btn star ${paper.favorite ? "on" : ""}`} aria-label={paper.favorite ? "取消星标" : "星标"} title="星标" onClick={(event) => { event.stopPropagation(); latest.current.onToggleFavorite(paper); }}><Star size={15} fill={paper.favorite ? "currentColor" : "none"} /></button></div>; },
+      cell: ({ row }) => { const paper = row.original; return <div className="table-select">{<input type="checkbox" aria-label={`选择论文 ${paper.title}`} checked={latest.current.selected.has(paper.id)} onChange={(event) => latest.current.onSelect(paper.id, event.target.checked)} onClick={(event) => event.stopPropagation()} />}<button className={`icon-btn star ${paper.favorite ? "on" : ""}`} aria-label={paper.favorite ? "取消星标" : "星标"} title="星标" onClick={(event) => { event.stopPropagation(); latest.current.onToggleFavorite(paper); }}><Star size={15} fill={paper.favorite ? "currentColor" : "none"} /></button></div>; },
     },
     {
       id: "title", accessorKey: "title", header: "标题", size: 300, minSize: 180, maxSize: 800, enableHiding: false,

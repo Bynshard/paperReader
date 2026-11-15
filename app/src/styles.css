@@ -333,6 +333,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .highlight.blue { background: #64b2f2; }
 .highlight.red { background: #ea7f77; }
 .evidence-focus { position: absolute; border: 2px solid var(--accent); background: rgba(37, 99, 83, 0.12); }
+.find-hit { position: absolute; background: rgba(247, 206, 75, 0.42); border-radius: 2px; pointer-events: none; mix-blend-mode: multiply; }
+.find-hit.on { background: rgba(247, 150, 40, 0.55); box-shadow: 0 0 0 1px rgba(150, 96, 26, 0.8); }
+.pane-scroll.grab { cursor: grab; }
+.pane-scroll.grabbing { cursor: grabbing; user-select: none; }
 
 /* ---------- side panel ---------- */
 .side { position: relative; background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 280px; max-width: 560px; }
@@ -539,6 +543,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .folder-manager label { display: block; margin: 12px 0; font-size: 12.5px; }
 .folder-manager input, .folder-manager select { display: block; width: 100%; margin-top: 5px; }
 .task-row { border-bottom: 1px solid var(--border); padding: 12px 0; display: flex; flex-direction: column; gap: 6px; }
+.task-center { width: 640px; max-height: 86vh; display: flex; flex-direction: column; }
+.task-list { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
+.task-main { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.task-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+.task-status { border-radius: 999px; padding: 1px 8px; background: #f1f0ea; color: #5b6065; }
+.task-status.translating, .task-status.parsing { background: var(--warn-soft); color: var(--warn); }
+.task-status.completed { background: var(--accent-soft); color: var(--accent); }
+.task-status.failed { background: var(--danger-soft); color: var(--danger); }
+.task-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.task-error summary { font-size: 11.5px; color: var(--danger); cursor: pointer; }
+.task-error pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 140px; overflow: auto; background: var(--danger-soft); border-radius: 6px; padding: 8px; font-size: 11px; margin: 6px 0 0; }
 .translation-settings label { display: block; margin: 10px 0; font-size: 12.5px; }
 .translation-settings input { display: block; width: 100%; margin-top: 4px; }
 .ai-settings { border: 0; margin: 0; padding: 0; }

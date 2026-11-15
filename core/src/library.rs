@@ -483,6 +483,98 @@ impl Library {
         Ok(())
     }
 
+    fn param_ids(params: &Value) -> Vec<String> {
+        params.get("paper_ids").and_then(Value::as_array).map(|rows| rows.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default()
+    }
+
+    pub fn bulk_set_status(&self, params: &Value) -> Result<Value> {
+        let ids = Self::param_ids(params);
+        anyhow::ensure!(!ids.is_empty(), "请选择论文");
+        let status = params.get("status").and_then(Value::as_str).unwrap_or("");
+        anyhow::ensure!(matches!(status, "unread" | "reading" | "read"), "无效的阅读状态");
+        let mut updated = 0usize;
+        {
+            let conn = self.conn();
+            let tx = conn.unchecked_transaction()?;
+            for id in &ids {
+                updated += tx.execute("UPDATE papers SET read_status=?,updated_at=? WHERE id=? AND deleted_at IS NULL", params![status, now_ms(), id])?;
+            }
+            tx.commit()?;
+        }
+        Ok(json!({"updated":updated,"status":status}))
+    }
+
+    pub fn bulk_trash(&self, params: &Value) -> Result<Value> {
+        let ids = Self::param_ids(params);
+        anyhow::ensure!(!ids.is_empty(), "请选择论文");
+        let mut updated = 0usize;
+        {
+            let conn = self.conn();
+            let tx = conn.unchecked_transaction()?;
+            for id in &ids {
+                updated += tx.execute("UPDATE papers SET deleted_at=?,updated_at=? WHERE id=? AND deleted_at IS NULL", params![now_ms(), now_ms(), id])?;
+            }
+            tx.commit()?;
+        }
+        for id in &ids {
+            let jobs: Vec<String> = {
+                let conn = self.conn();
+                let mut st = conn.prepare("SELECT id FROM jobs WHERE paper_id=? AND status NOT IN ('completed','failed','cancelled')")?;
+                let rows = st.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            for job in jobs { self.cancel_job(&job)?; }
+        }
+        Ok(json!({"updated":updated}))
+    }
+
+    pub fn bulk_restore(&self, params: &Value) -> Result<Value> {
+        let ids = Self::param_ids(params);
+        anyhow::ensure!(!ids.is_empty(), "请选择论文");
+        let mut updated = 0usize;
+        {
+            let conn = self.conn();
+            let tx = conn.unchecked_transaction()?;
+            for id in &ids {
+                updated += tx.execute("UPDATE papers SET deleted_at=NULL,updated_at=? WHERE id=? AND deleted_at IS NOT NULL", params![now_ms(), id])?;
+            }
+            tx.commit()?;
+        }
+        Ok(json!({"updated":updated}))
+    }
+
+    pub fn bulk_purge(&self, params: &Value) -> Result<Value> {
+        let ids = Self::param_ids(params);
+        anyhow::ensure!(!ids.is_empty(), "请选择论文");
+        let mut purged = 0usize;
+        let mut failed = Vec::new();
+        for id in &ids {
+            match self.purge(id) {
+                Ok(_) => purged += 1,
+                Err(err) => failed.push(json!({"paper_id":id,"error":err.to_string()})),
+            }
+        }
+        Ok(json!({"purged":purged,"failed":failed}))
+    }
+
+    pub fn empty_trash(&self) -> Result<Value> {
+        let ids: Vec<String> = {
+            let conn = self.conn();
+            let mut st = conn.prepare("SELECT id FROM papers WHERE deleted_at IS NOT NULL")?;
+            let rows = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let mut purged = 0usize;
+        let mut failed = Vec::new();
+        for id in &ids {
+            match self.purge(id) {
+                Ok(_) => purged += 1,
+                Err(err) => failed.push(json!({"paper_id":id,"error":err.to_string()})),
+            }
+        }
+        Ok(json!({"purged":purged,"failed":failed}))
+    }
+
     pub fn purge(&self, paper_id: &str) -> Result<Value> {
         let _maintenance=self.maintenance.lock().unwrap();
         let conn = self.conn();
@@ -843,11 +935,12 @@ impl Library {
     pub fn get_job(&self, job_id: &str) -> Result<Value> {
         let conn = self.conn();
         let row = conn
-            .query_row("SELECT id,paper_id,status,pages,created_at,updated_at,error,output_version_id FROM jobs WHERE id=?", params![job_id], |r| {
+            .query_row("SELECT j.id,j.paper_id,j.status,j.pages,j.created_at,j.updated_at,j.error,j.output_version_id,p.title FROM jobs j LEFT JOIN papers p ON p.id=j.paper_id WHERE j.id=?", params![job_id], |r| {
                 Ok(json!({
                     "id": r.get::<_, String>(0)?, "paper_id": r.get::<_, String>(1)?, "status": r.get::<_, String>(2)?,
                     "pages": r.get::<_, Option<String>>(3)?, "created_at": r.get::<_, i64>(4)?, "updated_at": r.get::<_, i64>(5)?,
                     "error": r.get::<_, Option<String>>(6)?, "output_version_id": r.get::<_, Option<String>>(7)?,
+                    "title": r.get::<_, Option<String>>(8)?,
                 }))
             })
             .optional()?;

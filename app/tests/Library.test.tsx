@@ -47,6 +47,16 @@ describe('library organization controls',()=>{
 });
 
 describe('Style-inspired table view',()=>{
+  it('selects trashed papers for bulk restore and purge',async()=>{
+    const p={...props([{...paper(1),deleted:true},{...paper(2),deleted:true}]),trashed:true,onRestoreMany:vi.fn(),onPurgeMany:vi.fn(),onEmptyTrash:vi.fn()};
+    render(<Library {...p}/>);
+    fireEvent.click(await screen.findByLabelText('选择当前页论文'));
+    fireEvent.click(within(screen.getByRole('toolbar',{name:'批量操作'})).getByRole('button',{name:'恢复所选'}));
+    expect(p.onRestoreMany).toHaveBeenCalledWith(['1','2']);
+    fireEvent.click(screen.getByLabelText('选择当前页论文'));
+    fireEvent.click(within(screen.getByRole('toolbar',{name:'批量操作'})).getByRole('button',{name:'永久删除'}));
+    expect(p.onPurgeMany).toHaveBeenCalledWith(['1','2']);
+  });
   it('sorts via the server callback and persists visible columns and display mode',async()=>{
     const p={...props([paper(0),paper(1)]),onOrganize:vi.fn(),onShortNote:vi.fn()};
     render(<Library {...p}/>);
