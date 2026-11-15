@@ -2,7 +2,7 @@
 
 use crate::engine::{self, Gateway};
 use crate::pdfmeta;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -138,6 +138,46 @@ mod hex {
     pub fn encode(bytes: impl AsRef<[u8]>) -> String {
         bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
     }
+}
+
+fn copy_with_retry(from: &Path, to: &Path) -> Result<()> {
+    let mut last = None;
+    for attempt in 0..8 {
+        match fs::copy(from, to) {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                last = Some(err);
+                #[cfg(windows)]
+                if matches!(last.as_ref().map(|e| e.kind()), Some(std::io::ErrorKind::PermissionDenied)) {
+                    std::thread::sleep(Duration::from_millis(40 * (attempt + 1)));
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    Err(last.unwrap().into())
+}
+
+fn rename_with_retry(from: &Path, to: &Path) -> Result<()> {
+    let mut last = None;
+    for attempt in 0..8 {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last = Some(err);
+                // Windows antivirus/indexers can briefly hold a freshly written
+                // PDF. Retry only the permission/sharing case, then report.
+                #[cfg(windows)]
+                if matches!(last.as_ref().map(|e| e.kind()), Some(std::io::ErrorKind::PermissionDenied)) {
+                    std::thread::sleep(Duration::from_millis(40 * (attempt + 1)));
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    Err(last.unwrap().into())
 }
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
@@ -1051,14 +1091,14 @@ impl Library {
         let sha=sha256_file(output)?;
         let bytes=output.metadata()?.len() as i64;
         let tmp=self.root.join("tmp").join(format!("{version_id}.pdf"));
-        fs::copy(output,&tmp)?;
-        fs::File::open(&tmp)?.sync_all()?;
+        copy_with_retry(output,&tmp).with_context(|| format!("复制译文输出失败：{}", tmp.display()))?;
+        fs::OpenOptions::new().read(true).write(true).open(&tmp).with_context(|| format!("打开临时译文失败：{}", tmp.display()))?.sync_all()?;
         let result=(||->Result<()>{
             let conn=self.conn();
             let tx=conn.unchecked_transaction()?;
             let available:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM papers p JOIN jobs j ON j.paper_id=p.id WHERE p.id=? AND p.deleted_at IS NULL AND j.id=? AND j.status NOT IN ('cancelling','cancelled','failed','completed'))",params![paper_id,job_id],|r|r.get(0))?;
             anyhow::ensure!(available,"cancelled");
-            fs::rename(&tmp,&dest)?;
+            rename_with_retry(&tmp,&dest)?;
             tx.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,engine,model,created_at,source_version_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",params![version_id,paper_id,"translated",sha,dest_rel,pages,bytes,"zh-CN","babeldoc",std::env::var("MOONLIGHT_MODEL").unwrap_or_default(),now_ms(),source_version_id])?;
             tx.execute("UPDATE papers SET updated_at=? WHERE id=?",params![now_ms(),paper_id])?;
             tx.execute("UPDATE jobs SET status='completed',updated_at=?,output_version_id=?,error=NULL WHERE id=?",params![now_ms(),version_id,job_id])?;
