@@ -52,6 +52,12 @@ export default function PaperTable(props: Props) {
   const header = useRef<HTMLDivElement>(null);
   const latest = useRef(props);
   latest.current = props;
+  const inspectTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(inspectTimer.current), []);
+  const previewLater = (paper: PaperSummary) => {
+    clearTimeout(inspectTimer.current);
+    inspectTimer.current = setTimeout(() => latest.current.onInspect(paper), 180);
+  };
   useEffect(() => { scroll.current?.scrollTo({ top: 0 }); setMenu(null); }, [props.sort, props.offset, props.query]);
 
   const actions: PaperMenuActions = {
@@ -79,8 +85,8 @@ export default function PaperTable(props: Props) {
       id: "title", accessorKey: "title", header: "标题", size: 300, minSize: 180, maxSize: 800, enableHiding: false,
       cell: ({ row }) => { const paper = row.original; return <div className="table-title-cell">
         <button className={`paper-title ${paper.read_status === "unread" ? "unread" : ""}`} title={paper.title}
-          onClick={(event) => { if (event.detail > 1) return; latest.current.onInspect(paper); }}
-          onDoubleClick={(event) => { event.stopPropagation(); latest.current.onOpen(paper); }}>{paper.title}</button>
+          onClick={(event) => { if (event.detail > 1) return; previewLater(paper); }}
+          onDoubleClick={(event) => { event.stopPropagation(); clearTimeout(inspectTimer.current); latest.current.onOpen(paper); }}>{paper.title}</button>
         <div className="small muted table-authors" title={paper.authors}>{paper.authors || "未知作者"}{paper.has_translation ? " · 已有译文" : ""}</div>
       </div>; },
     },
@@ -131,8 +137,8 @@ export default function PaperTable(props: Props) {
             return <div role="row" aria-rowindex={props.offset + item.index + 2} aria-selected={props.selected.has(row.id)} key={row.id} data-index={item.index} data-paper-id={row.id} data-read-status={paper.read_status} ref={virtual.measureElement}
               className={`paper-row paper-table-row ${props.selected.has(row.id) ? "selected" : ""} ${props.inspectedId === row.id ? "inspected" : ""} ${paper.deleted ? "deleted" : ""}`}
               style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${item.start}px)` }}
-              onClick={(event) => { if (event.detail > 1) return; if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; latest.current.onInspect(paper); }}
-              onDoubleClick={(event) => { if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; latest.current.onOpen(paper); }}
+              onClick={(event) => { if (event.detail > 1) return; if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; previewLater(paper); }}
+              onDoubleClick={(event) => { if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; clearTimeout(inspectTimer.current); latest.current.onOpen(paper); }}
               onContextMenu={(event) => { event.preventDefault(); setMenu({ paper, x: event.clientX, y: event.clientY }); }}>
               {row.getVisibleCells().map((cell) => <div role="cell" className="paper-table-cell" key={cell.id} style={{ width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>)}
             </div>;

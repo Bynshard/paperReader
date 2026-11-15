@@ -75,6 +75,12 @@ export default function Library(props: Props) {
   const [citationMessage, setCitationMessage] = useState("");
   const [menu, setMenu] = useState<{ paper: PaperSummary; x: number; y: number } | null>(null);
   const menuTrigger = useRef<HTMLElement | null>(null);
+  const inspectTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(inspectTimer.current), []);
+  const previewLater = (paper: PaperSummary) => {
+    clearTimeout(inspectTimer.current);
+    inspectTimer.current = setTimeout(() => onInspect?.(paper), 180);
+  };
   const [importMenu, setImportMenu] = useState<{ x: number; y: number } | null>(null);
   const [identifierOpen, setIdentifierOpen] = useState(false);
   const [columnsMenu, setColumnsMenu] = useState<{ x: number; y: number } | null>(null);
@@ -226,8 +232,8 @@ export default function Library(props: Props) {
                 return (
                   <div key={item.key} data-index={item.index} ref={virtual.measureElement} style={{ position: "absolute", top: 0, left: 0, width: "100%", paddingBottom: 8, transform: `translateY(${item.start}px)` }}>
                     <div className={`paper-row card-row ${paper.deleted ? "deleted" : ""} ${inspectedId === paper.id ? "inspected" : ""} ${selected.has(paper.id) ? "selected" : ""}`} data-paper-id={paper.id}
-                      onClick={(event) => { if (event.detail > 1) return; if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; onInspect?.(paper); }}
-                      onDoubleClick={(event) => { if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; onOpen(paper); }}
+                      onClick={(event) => { if (event.detail > 1) return; if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; previewLater(paper); }}
+                      onDoubleClick={(event) => { if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; clearTimeout(inspectTimer.current); onOpen(paper); }}
                       onContextMenu={(event) => { event.preventDefault(); setMenu({ paper, x: event.clientX, y: event.clientY }); }}>
                       {!paper.deleted && <input type="checkbox" aria-label={`选择论文 ${paper.title}`} checked={selected.has(paper.id)} onChange={(event) => toggleOne(paper.id, event.target.checked)} />}
                       <button className={`icon-btn star ${paper.favorite ? "on" : ""}`} aria-label={paper.favorite ? "取消星标" : "星标"} title="星标" onClick={() => onToggleFavorite(paper)}><Star size={16} fill={paper.favorite ? "currentColor" : "none"} /></button>

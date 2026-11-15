@@ -15,7 +15,7 @@ describe('virtual paper library',()=>{
     await waitFor(()=>expect(container.querySelectorAll('.paper-row').length).toBeGreaterThan(0));
     expect(container.querySelectorAll('.paper-row').length).toBeLessThan(30);
     fireEvent.click(screen.getByText('Paper 0'));
-    expect(p.onInspect).toHaveBeenCalledWith(p.papers[0]);
+    await waitFor(()=>expect(p.onInspect).toHaveBeenCalledWith(p.papers[0]));
     expect(p.onOpen).not.toHaveBeenCalled();
     fireEvent.doubleClick(screen.getByText('Paper 0'));
     expect(p.onOpen).toHaveBeenCalledWith(p.papers[0]);
