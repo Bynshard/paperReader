@@ -352,6 +352,48 @@ fn snippet(text: &str) -> String {
     out
 }
 
+/// Resolve the BabelDOC executable for an actual translation run.
+///
+/// `configured` is the path saved in settings (empty/none means "look in the
+/// bundled venv, `MOONLIGHT_BABELDOC_BIN` and PATH").  A missing binary becomes
+/// an actionable Chinese error instead of a raw `program not found`.
+pub fn babeldoc_executable(configured: Option<&str>) -> Result<PathBuf> {
+    let explicit = configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(path) = explicit.clone() {
+        candidates.push(path);
+    } else {
+        if let Ok(from_env) = std::env::var("MOONLIGHT_BABELDOC_BIN") {
+            let from_env = from_env.trim();
+            if !from_env.is_empty() {
+                candidates.push(PathBuf::from(from_env));
+            }
+        }
+        candidates.push(babeldoc_bin());
+    }
+    for candidate in &candidates {
+        if let Some(found) = resolve_babeldoc(candidate) {
+            return Ok(found);
+        }
+    }
+    let message = match explicit.as_deref() {
+        Some(path) if !looks_like_babeldoc(path) => format!(
+            "{} 不像是 BabelDOC 可执行文件（文件名需包含 babeldoc）",
+            path.display()
+        ),
+        Some(path) if !path.exists() => format!(
+            "未找到 BabelDOC 可执行文件：{}。请在 设置 → 翻译引擎 中选择 babeldoc.exe，或安装后加入 PATH",
+            path.display()
+        ),
+        Some(path) => format!("BabelDOC 不可执行：{}（请检查文件权限）", path.display()),
+        None => "未找到 BabelDOC，无法进行全文翻译：请先安装 BabelDOC（pip install babeldoc），再在 设置 → 翻译引擎 指定 babeldoc 可执行文件，或把它加入 PATH。".to_string(),
+    };
+    Err(anyhow!(message))
+}
+
 /// Locate the BabelDOC executable (env override, then the bundled venv, then PATH).
 pub fn babeldoc_bin() -> PathBuf {
     if let Ok(p) = std::env::var("MOONLIGHT_BABELDOC_BIN") {
@@ -531,7 +573,8 @@ pub fn run_translation(library: Arc<Library>, job_id: String, paper_id: String, 
         // engine arguments without restarting the app.
         let model = gateway.model.clone();
         let (qps, babeldoc) = library.translation_engine_options();
-        let mut cmd = Command::new(babeldoc);
+        let babeldoc = babeldoc_executable(Some(&babeldoc.to_string_lossy()))?;
+        let mut cmd = Command::new(&babeldoc);
         cmd.arg("--files")
             .arg(&source_path)
             .arg("--lang-in")
@@ -580,7 +623,10 @@ pub fn run_translation(library: Arc<Library>, job_id: String, paper_id: String, 
             });
         }
         library.set_job_status(&job_id, "parsing", None, None);
-        let mut child = cmd.spawn()?;
+        let mut child = cmd.spawn().map_err(|err| anyhow!(
+            "无法启动 BabelDOC（{}）：{err}。请在 设置 → 翻译引擎 检查可执行文件路径",
+            babeldoc.display()
+        ))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
         let mut log_file = log;
         let mut last_phase = String::new();

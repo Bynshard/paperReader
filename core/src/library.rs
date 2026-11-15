@@ -765,6 +765,13 @@ impl Library {
 
     pub fn start_translation(self: &Arc<Self>, paper_id: &str, pages: Option<String>) -> Result<Value> {
         if self.gateway.lock().unwrap().is_none() {self.ensure_gateway()?;}
+        // Fail before queueing a job when the translation kernel is missing, so
+        // the user sees an actionable message instead of a background
+        // "program not found" failure.
+        let configured_babeldoc = self.gateway_config()
+            .map(|config| config.babeldoc.trim().to_string())
+            .filter(|value| !value.is_empty());
+        engine::babeldoc_executable(configured_babeldoc.as_deref())?;
         let (_, src) = self.source_version(paper_id)?;
         let job_id = Uuid::new_v4().to_string();
         {
