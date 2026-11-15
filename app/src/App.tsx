@@ -128,13 +128,6 @@ export default function App() {
     }
   };
 
-  const fillImportedMetadata = (results: { status?: string; paper_id?: string }[]) => {
-    if (typeof api.refreshMetadata !== "function") return;
-    for (const paperId of results.filter((row) => row.status === "imported" && row.paper_id).slice(0, 20).map((row) => row.paper_id!)) {
-      void api.refreshMetadata(paperId, false).catch(() => undefined);
-    }
-  };
-
   const doImport = async () => {
     setImporting(true); setImportProgress(undefined);
     try {
@@ -143,7 +136,6 @@ export default function App() {
       const dup = results.filter((result) => result.status === "duplicate").length;
       const failed = results.filter((result) => result.status === "failed");
       await reload();
-      fillImportedMetadata(results);
       setToast(results.length === 0 ? "未选择文件" : `导入 ${imported} 篇${dup ? `，跳过重复 ${dup} 篇` : ""}${failed.length ? `，失败 ${failed.length} 篇` : ""}`);
     } catch (e) {
       setToast(`导入失败：${String((e as Error).message || e)}`);
@@ -164,7 +156,6 @@ export default function App() {
     try {
       const results = (await api.importPaths(paths)) as { status: string; paper_id?: string }[];
       await reload();
-      fillImportedMetadata(results);
       const imported = results.filter((row) => row.status === "imported").length;
       const duplicate = results.filter((row) => row.status === "duplicate").length;
       const failed = results.filter((row) => row.status === "failed").length;

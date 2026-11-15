@@ -208,7 +208,7 @@ export default function Library(props: Props) {
           <div className="empty-icon"><Inbox size={44} /></div>
           <h2>{loading ? "正在加载论文…" : query ? "没有匹配的论文" : "当前分类没有论文"}</h2>
           <p>导入 PDF 后即可离线阅读；翻译、解释与问答按需调用已配置的模型。</p>
-          <button className="btn primary" onClick={onImport}><Upload size={15} />导入 PDF</button>
+          <button className="btn primary" aria-label="导入 PDF" onClick={onImport}><Upload size={15} />导入 PDF</button>
         </div>
       ) : view === "table" ? (
         <PaperTable {...tableActions} papers={papers} total={total} offset={offset} query={query} sort={sort} selected={selected} inspectedId={inspectedId}
