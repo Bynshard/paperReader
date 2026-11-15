@@ -1,6 +1,14 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
-function createTranslationSettings({file, safeStorage, env = process.env}) {
+
+// Actions this module answers.  `pickBabeldoc` needs a native dialog and
+// `restart` needs the app lifecycle, so both stay in main.cjs.
+const TRANSLATION_SETTINGS_ACTIONS = ['status', 'save', 'test', 'checkBabeldoc'];
+const RELOAD_TIMEOUT_MS = 20_000;
+const PROBE_TIMEOUT_MS = 25_000;
+const BABELDOC_TIMEOUT_MS = 15_000;
+
+function createTranslationSettings({file, safeStorage, env = process.env, call}) {
   let current = {base_url:env.MOONLIGHT_UPSTREAM || '',model:env.MOONLIGHT_MODEL || '',api_key:env.MOONLIGHT_UPSTREAM_KEY || '',babeldoc:env.MOONLIGHT_BABELDOC_BIN || '',qps:Number(env.MOONLIGHT_QPS) || 6};
   let pendingRestart=false, loadError='';
   async function available() {
@@ -8,7 +16,49 @@ function createTranslationSettings({file, safeStorage, env = process.env}) {
     return safeStorage.isAsyncEncryptionAvailable ? safeStorage.isAsyncEncryptionAvailable() : safeStorage.isEncryptionAvailable();
   }
   function summary(){const {api_key,...visible}=current;return {...visible,key_configured:!!api_key,pending_restart:pendingRestart,error:loadError};}
-  return {
+  // Push a freshly saved configuration into the running sidecar so the very
+  // next translation/chat request uses it.  A failure is surfaced, never
+  // hidden: the settings then keep the old "restart to apply" contract.
+  async function applyHotReload(next) {
+    if (typeof call !== 'function') return {applied: false, error: ''};
+    try {
+      const result = await call('reload_gateway', {
+        base_url: next.base_url,
+        model: next.model,
+        api_key: next.api_key,
+        qps: next.qps,
+        babeldoc: next.babeldoc,
+      }, RELOAD_TIMEOUT_MS);
+      const applied = !!(result && result.ok);
+      return applied ? {applied, error: ''} : {applied, error: String((result && result.error) || 'sidecar 未确认热更新结果')};
+    } catch (error) {
+      return {applied: false, error: error && error.message ? error.message : String(error)};
+    }
+  }
+  async function runProbe(input){
+    if (typeof call !== 'function') throw new Error('sidecar 未连接，无法测试 API 连接');
+    const typed = (key) => (input && typeof input[key] === 'string' ? input[key].trim() : '');
+    const params = {};
+    if (typed('base_url')) params.base_url = typed('base_url');
+    if (typed('model')) params.model = typed('model');
+    // The saved key never leaves the main process, so an untouched key field
+    // simply reuses it for the probe.
+    if (typed('api_key')) params.api_key = typed('api_key');
+    else if (current.api_key) params.api_key = current.api_key;
+    if (!params.base_url && current.base_url) params.base_url = current.base_url;
+    if (!params.model && current.model) params.model = current.model;
+    if (input && Number.isFinite(Number(input.timeout_ms)) && Number(input.timeout_ms) > 0) params.timeout_ms = Number(input.timeout_ms);
+    const result = await call('translation_probe', params, PROBE_TIMEOUT_MS);
+    return result && typeof result === 'object' ? result : {ok: false, error: 'sidecar 返回了无法识别的测试结果'};
+  }
+  async function runBabeldocCheck(input){
+    if (typeof call !== 'function') throw new Error('sidecar 未连接，无法检查 BabelDOC');
+    const requested = input && typeof input.path === 'string' ? input.path.trim() : '';
+    const target = requested || String(current.babeldoc || '').trim();
+    const result = await call('check_babeldoc', target ? {path: target} : {}, BABELDOC_TIMEOUT_MS);
+    return result && typeof result === 'object' ? result : {ok: false, error: 'sidecar 返回了无法识别的检查结果'};
+  }
+  const settings = {
     summary,
     environment(){return {
       ...(current.base_url?{MOONLIGHT_UPSTREAM:current.base_url}:{}),
@@ -46,8 +96,26 @@ function createTranslationSettings({file, safeStorage, env = process.env}) {
       await fs.mkdir(path.dirname(file),{recursive:true});
       await fs.writeFile(file+'.tmp',JSON.stringify({encrypted:bytes.toString('base64')}),{mode:0o600});
       await fs.rename(file+'.tmp',file);
-      current=next;pendingRestart=true;loadError='';return summary();
+      current=next;pendingRestart=true;loadError='';
+      const reload=await applyHotReload(next);
+      if(reload.applied)pendingRestart=false;
+      else if(reload.error)loadError=`翻译配置已保存，但立即生效失败：${reload.error}；请重启软件后生效`;
+      return summary();
     },
+    // Renderer facing diagnostics: a broken connection is a value, not a throw.
+    test(input){return runProbe(input);},
+    checkBabeldoc(input){return runBabeldocCheck(input);},
+    // Single entry point for `translation:action`, so the IPC whitelist and the
+    // implementation cannot drift apart.
+    async handle(action,input){
+      if(!TRANSLATION_SETTINGS_ACTIONS.includes(action))throw new Error('未知翻译配置操作');
+      if(action==='status')return summary();
+      if(action==='save')return settings.save(input);
+      if(action==='test')return runProbe(input);
+      return runBabeldocCheck(input);
+    },
+    actions:()=>[...TRANSLATION_SETTINGS_ACTIONS],
   };
+  return settings;
 }
-module.exports={createTranslationSettings};
+module.exports={createTranslationSettings,TRANSLATION_SETTINGS_ACTIONS};

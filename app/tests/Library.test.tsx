@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import Library from '../src/Library';
 import type { PaperSummary } from '../src/types';
@@ -6,15 +6,18 @@ function paper(index: number): PaperSummary {
   return {id:String(index),title:`Paper ${index}`,authors:'Author',imported_at:index,updated_at:index,favorite:false,read_status:'unread',deleted:false,categories:[],tags:[],has_translation:false};
 }
 function props(papers: PaperSummary[]) {
-  return {papers,total:papers.length,loading:false,sort:'recent' as const,onSort:vi.fn(),offset:0,pageSize:100,onOffset:vi.fn(),query:'',onQuery:vi.fn(),onOpen:vi.fn(),onImport:vi.fn(),onToggleFavorite:vi.fn(),onTrash:vi.fn(),onRestore:vi.fn(),onPurge:vi.fn(),onExport:vi.fn(),onZotero:vi.fn(),importing:false};
+  return {papers,total:papers.length,loading:false,sort:'recent' as const,onSort:vi.fn(),offset:0,pageSize:100,onOffset:vi.fn(),query:'',onQuery:vi.fn(),onOpen:vi.fn(),onInspect:vi.fn(),onCycleStatus:vi.fn(),onImport:vi.fn(),onZotero:vi.fn(),onToggleFavorite:vi.fn(),onTrash:vi.fn(),onRestore:vi.fn(),onPurge:vi.fn(),onExport:vi.fn(),onBulkExport:vi.fn(),importing:false};
 }
 describe('virtual paper library',()=>{
-  it('bounds DOM nodes for 100,000 supplied rows and opens the actual row',async()=>{
+  it('bounds DOM nodes for 100,000 supplied rows and previews then opens the actual row',async()=>{
     const p=props(Array.from({length:100000},(_,i)=>paper(i)));
     const {container}=render(<Library {...p}/>);
     await waitFor(()=>expect(container.querySelectorAll('.paper-row').length).toBeGreaterThan(0));
     expect(container.querySelectorAll('.paper-row').length).toBeLessThan(30);
     fireEvent.click(screen.getByText('Paper 0'));
+    expect(p.onInspect).toHaveBeenCalledWith(p.papers[0]);
+    expect(p.onOpen).not.toHaveBeenCalled();
+    fireEvent.doubleClick(screen.getByText('Paper 0'));
     expect(p.onOpen).toHaveBeenCalledWith(p.papers[0]);
   });
   it('passes sorting and pagination to the server query owner',()=>{
@@ -35,7 +38,7 @@ describe('library organization controls',()=>{
     fireEvent.click(screen.getByRole('button',{name:'卡片',exact:true}));
     await screen.findByText('Paper 1');
     fireEvent.click(screen.getByLabelText('选择当前页论文'));
-    fireEvent.click(screen.getAllByRole('button',{name:'分类 / 标签',exact:true})[0]);expect(p.onOrganize).toHaveBeenCalledWith(['1','2']);
+    fireEvent.click(within(screen.getByRole('toolbar',{name:'批量操作'})).getByRole('button',{name:'分类 / 标签',exact:true}));expect(p.onOrganize).toHaveBeenCalledWith(['1','2']);
     fireEvent.click(screen.getAllByRole('button',{name:'速记',exact:true})[0]);
     fireEvent.change(screen.getByLabelText('一句话速记 Paper 1'),{target:{value:'一句话记住关键贡献'}});fireEvent.click(screen.getByRole('button',{name:'保存速记'}));
     await waitFor(()=>expect(p.onShortNote).toHaveBeenCalledWith(expect.objectContaining({id:'1',updated_at:1}),'一句话记住关键贡献'));

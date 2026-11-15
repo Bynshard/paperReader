@@ -9,6 +9,7 @@
 //!   <- {"event":"job","jobId":"...","status":"translating"}
 
 mod ai;
+mod cjk;
 mod organization;
 mod citations;
 mod backup;
@@ -135,7 +136,7 @@ fn main() {
             }
         };
         let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-        if method == "list_papers_page" || matches!(method, "import_pdfs" | "zotero_import" | "zotero_api_import" | "explain" | "translate_text" | "export" | "backup_create" | "backup_restore" | "refresh_citations") {
+        if method == "list_papers_page" || matches!(method, "import_pdfs" | "zotero_import" | "zotero_api_import" | "explain" | "translate_text" | "export" | "backup_create" | "backup_restore" | "refresh_citations" | "refresh_metadata" | "translation_probe" | "check_babeldoc") {
             let queue = if method == "list_papers_page" { &read_tx } else { &heavy_tx };
             if let Err(error) = queue.try_send(request) {
                 let request = match error {
@@ -231,9 +232,18 @@ fn dispatch(lib: &Arc<Library>, method: &str, params: &Value) -> Result<Value> {
             Ok(json!({"ok": true}))
         }
         "save_category" => organization::folder_save(lib,params),
+        "folder_delete" => organization::folder_delete(lib,params),
+        "folder_move" => organization::folder_move(lib,params),
+        "folder_merge" => organization::folder_merge(lib,params),
+        "tag_rename" => organization::tag_rename(lib,params),
+        "tag_set_color" => organization::tag_set_color(lib,params),
+        "tag_delete" => organization::tag_delete(lib,params),
         "bulk_assign" => organization::bulk_assign(lib,params),
+        "bulk_unassign" => organization::bulk_unassign(lib,params),
+        "list_duplicates" => organization::list_duplicates(lib,params),
         "set_short_note" => organization::short_note(lib,params),
         "refresh_citations" => citations::refresh(lib,params),
+        "refresh_metadata" => lib.refresh_metadata(params),
         "add_category" => lib.add_category(&param_str(params, "name")?),
         "list_annotations" => Ok(Value::Array(lib.list_annotations(&param_str(params, "paper_id")?)?)),
         "add_annotation" => lib.add_annotation(
@@ -267,6 +277,11 @@ fn dispatch(lib: &Arc<Library>, method: &str, params: &Value) -> Result<Value> {
             lib.cancel_job(&param_str(params, "job_id")?)?;
             Ok(json!({"ok": true}))
         }
+        // Hot reload of the translation configuration; diagnostics for the
+        // settings dialog. Both never require a restart.
+        "reload_gateway" => lib.reload_gateway(params),
+        "translation_probe" => lib.translation_probe(params),
+        "check_babeldoc" => lib.check_babeldoc(params),
         "save_paper" => lib.save_paper(params),
         "append_note" => lib.append_note(&param_str(params,"paper_id")?,&param_str(params,"text")?),
         "backup_create" => backup::create(lib,std::path::Path::new(&param_str(params,"parent")?)),

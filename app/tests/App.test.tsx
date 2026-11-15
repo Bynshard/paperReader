@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../src/App';
 
-const mocks = vi.hoisted(() => ({paperPage:vi.fn(),taxonomy:vi.fn(),appInfo:vi.fn(),getPaper:vi.fn(),zoteroProbe:vi.fn(),zoteroImport:vi.fn(),pickDirectory:vi.fn(),saveText:vi.fn(),syncStatus:vi.fn(),onEvent:vi.fn(()=>()=>{})}));
+const mocks = vi.hoisted(() => ({paperPage:vi.fn(),taxonomy:vi.fn(),appInfo:vi.fn(),getPaper:vi.fn(),zoteroProbe:vi.fn(),zoteroImport:vi.fn(),pickDirectory:vi.fn(),saveText:vi.fn(),syncStatus:vi.fn(),listJobs:vi.fn(),onEvent:vi.fn(()=>()=>{})}));
 vi.mock('../src/api', () => ({api:mocks}));
 vi.mock('../src/Reader', () => ({default:({paper}:any) => <div>Reading {paper.title}</div>}));
 const paper = (id:string) => ({id,title:`Paper ${id}`,authors:'Author',imported_at:0,updated_at:0,favorite:false,read_status:'unread',deleted:false,categories:[],tags:[],has_translation:false});
@@ -21,6 +21,7 @@ beforeEach(()=>{
   mocks.taxonomy.mockResolvedValue({categories:[],tags:[]});
   mocks.appInfo.mockResolvedValue({});
   mocks.syncStatus.mockResolvedValue({configured:false,running:false});
+  mocks.listJobs.mockResolvedValue([]);
 });
 describe('library asynchronous requests',()=>{
   it('allows a custom Zotero directory and passes migration choices to the backend',async()=>{
@@ -28,7 +29,8 @@ describe('library asynchronous requests',()=>{
     mocks.zoteroProbe.mockResolvedValueOnce({found:false,collections:[]}).mockResolvedValue({found:true,data_dir:'/custom/Zotero',source:'sqlite',items:20,collections:[{id:1,key:'1:COLL0001',name:'Research',items:20}]});
     mocks.zoteroImport.mockResolvedValue({imported:20,updated:0,duplicates:0,attachments:22,annotations:5,without_pdf:1,missing_attachments:[{item:'A',attachment:'B',path:'attachments:missing.pdf',reason:'linked_base_directory_required'}],errors:[],warnings:[]});
     mocks.saveText.mockResolvedValue({saved:true});
-    mount();fireEvent.click(screen.getByText('从 Zotero 导入'));
+    mount();fireEvent.click(screen.getByRole('button',{name:'导入论文'}));
+    fireEvent.click(await screen.findByText('从 Zotero 导入'));
     await screen.findByText(/未找到 Zotero 数据目录/);
     fireEvent.change(screen.getByLabelText('Zotero 数据目录'),{target:{value:'/custom/Zotero'}});
     fireEvent.click(screen.getByText('读取目录'));
@@ -62,8 +64,9 @@ describe('library asynchronous requests',()=>{
     mocks.paperPage.mockResolvedValue({items:[paper('A'),paper('B')],total:2,offset:0,limit:100});
     mocks.getPaper.mockImplementation((id)=>id==='A'?first.promise:second.promise);
     mount();
-    fireEvent.click(await screen.findByText('Paper A'));
-    fireEvent.click(screen.getByText('Paper B'));
+    // Single click previews (Inspector); double click opens the reader.
+    fireEvent.doubleClick(await screen.findByText('Paper A'));
+    fireEvent.doubleClick(screen.getByText('Paper B'));
     await act(async()=>{second.resolve({...paper('B'),versions:[]});});
     await screen.findByText('Reading Paper B');
     await act(async()=>{first.resolve({...paper('A'),versions:[]});});

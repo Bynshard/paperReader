@@ -3,8 +3,8 @@ import {describe,it,expect,vi} from 'vitest';
 import FolderManager from '../src/FolderManager';
 import OrganizePapers from '../src/OrganizePapers';
 import {folderRows,canParent} from '../src/folders';
-const {saveCategory,bulkAssign}=vi.hoisted(()=>({saveCategory:vi.fn(),bulkAssign:vi.fn()}));
-vi.mock('../src/api',()=>({api:{saveCategory,bulkAssign}}));
+const {saveCategory,bulkAssign,bulkUnassign,folderDelete,folderMerge}=vi.hoisted(()=>({saveCategory:vi.fn(),bulkAssign:vi.fn(),bulkUnassign:vi.fn(),folderDelete:vi.fn(),folderMerge:vi.fn()}));
+vi.mock('../src/api',()=>({api:{saveCategory,bulkAssign,bulkUnassign,folderDelete,folderMerge}}));
 const folders=[{id:'parent',name:'强化学习'},{id:'child',name:'RLHF',parent_id:'parent'}];
 describe('library organization',()=>{
  it('shows real paths and prevents assigning a descendant as parent',()=>{expect(folderRows(folders).map(c=>c.path)).toEqual(['强化学习','强化学习 / RLHF']);expect(canParent(folders,'child','parent')).toBe(false);});
@@ -18,5 +18,20 @@ describe('library organization',()=>{
   bulkAssign.mockResolvedValue({updated:2});const close=vi.fn();render(<OrganizePapers ids={['a','b']} categories={folders} tags={[]} onSaved={vi.fn().mockResolvedValue(undefined)} onClose={close}/>);
   fireEvent.change(screen.getByLabelText('添加到目录'),{target:{value:'child'}});fireEvent.change(screen.getByLabelText('批量标签'),{target:{value:'待读，方法,待读'}});fireEvent.click(screen.getByRole('button',{name:'保存分类与标签'}));
   await waitFor(()=>expect(bulkAssign).toHaveBeenCalledWith({paper_ids:['a','b'],category_id:'child',tags:['待读','方法']}));await waitFor(()=>expect(close).toHaveBeenCalled());
+ });
+ it('removes an assignment in bulk without deleting the papers',async()=>{
+  bulkUnassign.mockResolvedValue({updated:2,removed:3});const close=vi.fn();render(<OrganizePapers ids={['a','b']} categories={folders} tags={[]} onSaved={vi.fn().mockResolvedValue(undefined)} onClose={close}/>);
+  fireEvent.click(screen.getByRole('button',{name:'移除归类'}));
+  fireEvent.change(screen.getByLabelText('添加到目录'),{target:{value:'child'}});fireEvent.change(screen.getByLabelText('批量标签'),{target:{value:'待读'}});
+  fireEvent.click(screen.getByRole('button',{name:'移除所选归类'}));
+  await waitFor(()=>expect(bulkUnassign).toHaveBeenCalledWith({paper_ids:['a','b'],category_id:'child',tags:['待读']}));
+  expect(bulkAssign).not.toHaveBeenCalled();await waitFor(()=>expect(close).toHaveBeenCalled());
+ });
+ it('deletes a directory through the backend and keeps the papers',async()=>{
+  folderDelete.mockResolvedValue({ok:true,deleted:'child',parent_id:'parent',reparented:0,papers_unassigned:3});
+  vi.spyOn(window,'confirm').mockReturnValue(true);
+  const changed=vi.fn().mockResolvedValue(undefined);render(<FolderManager items={folders} onChanged={changed} onClose={vi.fn()}/>);
+  fireEvent.change(screen.getByLabelText('编辑目录'),{target:{value:'child'}});fireEvent.click(screen.getByRole('button',{name:'删除目录'}));
+  await waitFor(()=>expect(folderDelete).toHaveBeenCalledWith('child'));expect(changed).toHaveBeenCalled();await screen.findByText(/目录已删除/);
  });
 });

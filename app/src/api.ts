@@ -15,6 +15,9 @@ type MoonlightBridge = {
   backup?: (action:string)=>Promise<{cancelled?:boolean;path?:string}>;
   appInfo: () => Promise<AppInfo>;
   onEvent: (cb: (msg: JobEvent | { event: string; [k: string]: unknown }) => void) => () => void;
+  importPaths?: (paths: string[]) => Promise<unknown[]>;
+  getPathForFile?: (file: File) => string;
+  importIdentifier?: (input: string) => Promise<unknown>;
 };
 
 declare global {
@@ -35,6 +38,17 @@ export const api = {
   appendNote: (paper_id:string,text:string) => bridge().call('append_note',{paper_id,text}) as Promise<Paper>,
   saveCategory: (input:{id?:string;name:string;parent_id?:string|null}) => bridge().call('save_category',input) as Promise<import('./types').Category>,
   bulkAssign: (input:{paper_ids:string[];category_id?:string;tags:string[]}) => bridge().call('bulk_assign',input),
+  bulkUnassign: (input:{paper_ids:string[];category_id?:string;tags:string[]}) => bridge().call('bulk_unassign',input) as Promise<{updated:number;removed:number}>,
+  folderDelete: (category_id:string) => bridge().call('folder_delete',{category_id}) as Promise<{ok:boolean;deleted:string;parent_id:string|null;reparented:number;papers_unassigned:number}>,
+  folderMove: (category_id:string,parent_id:string|null) => bridge().call('folder_move',{category_id,parent_id}) as Promise<import('./types').Category>,
+  folderMerge: (source_id:string,target_id:string) => bridge().call('folder_merge',{source_id,target_id}) as Promise<{ok:boolean;papers_moved:number;reparented:number}>,
+  tagRename: (tag_id:string,new_name:string) => bridge().call('tag_rename',{tag_id,new_name}) as Promise<import('./types').Tag>,
+  tagSetColor: (tag_id:string,color:string) => bridge().call('tag_set_color',{tag_id,color}) as Promise<import('./types').Tag>,
+  tagDelete: (tag_id:string) => bridge().call('tag_delete',{tag_id}) as Promise<{ok:boolean;deleted:string;papers_unassigned:number}>,
+  listDuplicates: () => bridge().call('list_duplicates',{}) as Promise<{count:number;groups:{kind:string;key:string;paper_ids:string[];count:number}[]}>,
+  refreshMetadata: (paper_id:string,force=false) => bridge().call('refresh_metadata',{paper_id,force},90000) as Promise<Paper & {metadata_source?:string;updated_fields?:string[]}>,
+  importPaths: (paths:string[]) => { const desktop = bridge(); return desktop.importPaths ? desktop.importPaths(paths) : Promise.reject(new Error('请升级桌面客户端以支持拖拽导入')); },
+  importIdentifier: (input:string) => { const desktop = bridge(); return desktop.importIdentifier ? desktop.importIdentifier(input) : Promise.reject(new Error('请升级桌面客户端以支持 DOI / arXiv 导入')); },
   setShortNote: (paper_id:string,text:string,expected_updated_at:number) => bridge().call('set_short_note',{paper_id,text,expected_updated_at}),
   refreshCitations: (paper_id:string,force=false) => bridge().call('refresh_citations',{paper_id,force},120000) as Promise<{cached:boolean;citation_count:number;citation_source:string;citation_updated_at:number}>,
   addCategory: (name:string) => bridge().call('add_category',{name}) as Promise<{id:string;name:string}>,

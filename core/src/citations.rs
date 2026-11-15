@@ -6,7 +6,9 @@ use serde_json::{json,Value};
 use std::{sync::{Mutex,OnceLock},time::{Duration,Instant},io::Read};
 static HTTP:OnceLock<reqwest::blocking::Client>=OnceLock::new();
 static LAST:Mutex<Option<Instant>>=Mutex::new(None);
-fn get(url:reqwest::Url)->Result<Value>{
+// One polite, size-capped transport feeds both citation metrics and metadata
+// lookups: at most one request per second, never an endless redirect chain.
+fn request(url:reqwest::Url)->Result<String>{
     {
         let mut last=LAST.lock().map_err(|_|anyhow!("citation request lock"))?;
         if let Some(previous)=*last{if let Some(wait)=Duration::from_secs(1).checked_sub(previous.elapsed()){std::thread::sleep(wait);}}
@@ -14,16 +16,21 @@ fn get(url:reqwest::Url)->Result<Value>{
     }
     let client=HTTP.get_or_init(||reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).user_agent("Moonlight/0.1 (https://github.com/Bynshard/paperReader)").build().expect("citation HTTP client"));
     let response=client.get(url).send()?;
-    if response.status().as_u16()==429{return Err(anyhow!("引用量服务限流，请稍后刷新；已有缓存已保留"));}
-    ensure!(response.status().is_success(),"引用量查询失败（HTTP {}），未更新已有缓存",response.status());
+    if response.status().as_u16()==429{return Err(anyhow!("文献服务限流，请稍后重试；已有数据已保留"));}
+    ensure!(response.status().is_success(),"文献查询失败（HTTP {}），未更新已有数据",response.status());
     let mut text=String::new();response.take(2_000_001).read_to_string(&mut text)?;
-    ensure!(text.len()<=2_000_000,"引用量响应过大");Ok(serde_json::from_str(&text)?)
+    ensure!(text.len()<=2_000_000,"文献服务响应过大");Ok(text)
 }
-fn doi(raw:&str)->String {let text=raw.trim();for prefix in ["https://doi.org/","http://doi.org/","https://dx.doi.org/","doi:","DOI:"]{if let Some(value)=text.strip_prefix(prefix){return value.trim().to_ascii_lowercase();}}text.to_ascii_lowercase()}
-fn arxiv(raw:&str)->String {
+fn get(url:reqwest::Url)->Result<Value>{Ok(serde_json::from_str(&request(url)?)?)}
+// Metadata lookups share the same throttle and timeout as citation metrics.
+pub(crate) fn fetch_text(url:&str)->Result<String>{request(reqwest::Url::parse(url)?)}
+pub(crate) fn doi(raw:&str)->String {let text=raw.trim();for prefix in ["https://doi.org/","http://doi.org/","https://dx.doi.org/","doi:","DOI:"]{if let Some(value)=text.strip_prefix(prefix){return value.trim().to_ascii_lowercase();}}text.to_ascii_lowercase()}
+pub(crate) fn arxiv(raw:&str)->String {
     let text=raw.trim().trim_start_matches("arXiv:").trim_start_matches("https://arxiv.org/abs/").trim_start_matches("https://arxiv.org/pdf/").trim_end_matches(".pdf");
     let re=regex::Regex::new(r"v\d+$").unwrap();re.replace(text,"").to_string()
 }
+pub(crate) fn valid_doi(identifier:&str)->bool {identifier.starts_with("10.")&&identifier.contains('/')&&identifier.len()<=500}
+pub(crate) fn valid_arxiv(identifier:&str)->bool {regex::Regex::new(r"^(?:\d{4}\.\d{4,5}|[A-Za-z.-]+/\d{7})$").map(|re|re.is_match(identifier)).unwrap_or(false)}
 fn crossref(identifier:&str)->Result<(i64,String,String)>{
     let mut url=reqwest::Url::parse("https://api.crossref.org/works/")?;url.path_segments_mut().unwrap().pop_if_empty().push(identifier);
     let response=get(url)?;let message=&response["message"];
@@ -53,12 +60,12 @@ pub fn refresh(lib:&Library,p:&Value)->Result<Value>{
     let doi_id=raw_doi.filter(|s|!s.trim().is_empty()).map(doi);
     let arxiv_id=raw_arxiv.filter(|s|!s.trim().is_empty()).map(arxiv);
     let (count,source,source_url)=if let Some(identifier)=doi_id {
-        ensure!(identifier.starts_with("10.")&&identifier.contains('/')&&identifier.len()<=500,"DOI 格式无效，请先编辑资料");
+        ensure!(valid_doi(&identifier),"DOI 格式无效，请先编辑资料");
         // Crossref does not register every DOI (for example DataCite/arXiv).
         // Fall back by the same exact DOI, never by a fuzzy title search.
         crossref(&identifier).or_else(|first|semantic("DOI",&identifier).map_err(|second|anyhow!("Crossref：{first}；Semantic Scholar：{second}")))?
     }else if let Some(identifier)=arxiv_id {
-        ensure!(regex::Regex::new(r"^(?:\d{4}\.\d{4,5}|[A-Za-z.-]+/\d{7})$")?.is_match(&identifier),"arXiv ID 无效，请先编辑资料");
+        ensure!(valid_arxiv(&identifier),"arXiv ID 无效，请先编辑资料");
         semantic("ARXIV",&identifier)?
     }else{return Err(anyhow!("缺少 DOI/arXiv ID，请先编辑资料；不会按近似标题猜测论文"));};
     let fetched_at=now_ms();

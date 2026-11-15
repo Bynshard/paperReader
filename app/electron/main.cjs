@@ -11,9 +11,10 @@
  */
 const { app, BrowserWindow, ipcMain, dialog, shell, session, safeStorage, protocol, net } = require("electron");
 const { createAiService } = require('./ai-service.cjs');
-const { createTranslationSettings } = require('./translation-settings.cjs');
+const { createTranslationSettings, TRANSLATION_SETTINGS_ACTIONS } = require('./translation-settings.cjs');
 const { createSyncSettings } = require('./sync-settings.cjs');
 const { importBatches } = require('./import-batches.cjs');
+const { importIdentifier } = require('./import-identifier.cjs');
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -120,6 +121,14 @@ function callSidecar(method, params = {}, timeoutMs = 120000) {
   });
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1440,
@@ -171,7 +180,7 @@ app.whenReady().then(async () => {
   try {
     const location=path.join(app.getPath('userData'),'library-location.json');
     if(fs.existsSync(location)){const saved=JSON.parse(fs.readFileSync(location,'utf8'));if(typeof saved.path!=='string'||!fs.existsSync(path.join(saved.path,'library.db')))throw new Error('已选择的论文库不可用，请恢复目录后重试');libraryOverride=saved.path;}
-    translationSettings=createTranslationSettings({file:path.join(app.getPath('userData'),'translation-credentials.json'),safeStorage});
+    translationSettings=createTranslationSettings({file:path.join(app.getPath('userData'),'translation-credentials.json'),safeStorage,call:callSidecar});
     await translationSettings.load();
     Object.assign(process.env,translationSettings.environment());
     await startSidecar();
@@ -183,8 +192,7 @@ app.whenReady().then(async () => {
   syncSettings=createSyncSettings({file:path.join(app.getPath('userData'),'sync-credentials.json'),safeStorage,call:callSidecar});
   await syncSettings.load();
   ipcMain.handle('translation:action',async(_e,{action,input})=>{
-    if(action==='status')return translationSettings.summary();
-    if(action==='save')return translationSettings.save(input);
+    if(TRANSLATION_SETTINGS_ACTIONS.includes(action))return translationSettings.handle(action,input);
     if(action==='pickBabeldoc'){
       const choice=await dialog.showOpenDialog(win,{title:'选择 BabelDOC 可执行文件',properties:['openFile'],...(process.platform==='win32'?{filters:[{name:'BabelDOC',extensions:['exe']}]}:{})});
       return choice.canceled?null:choice.filePaths[0];
@@ -209,6 +217,31 @@ app.whenReady().then(async () => {
     return importBatches(res.filePaths, callSidecar, (progress) => {
       if (win && !win.isDestroyed()) win.webContents.send('sidecar:event', {event:'import_progress', ...progress});
     });
+  });
+  ipcMain.handle("dialog:import-paths", async (_e, { paths }) => {
+    const files = (Array.isArray(paths) ? paths : []).filter((value) => typeof value === "string" && /\.pdf$/i.test(value));
+    if (!files.length) throw new Error("请拖入 PDF 文件");
+    return importBatches(files, callSidecar, (progress) => {
+      if (win && !win.isDestroyed()) win.webContents.send('sidecar:event', {event:'import_progress', ...progress});
+    });
+  });
+  ipcMain.handle("dialog:import-identifier", async (_e, payload) => {
+    const input = typeof payload === "string" ? payload : payload?.input;
+    const text = typeof input === "string" ? input.trim() : "";
+    if (!text) return { status: "error", code: "invalid-input", error: "请输入 arXiv ID、arXiv 链接或 DOI" };
+    if (text.length > 512) return { status: "error", code: "invalid-input", error: "标识符过长，请只粘贴一条标识符" };
+    const tmpDir = path.join(app.getPath("userData"), "import-tmp");
+    try {
+      return await withTimeout(
+        importIdentifier({ input: text, callSidecar, tmpDir }),
+        120000,
+        "导入超时（超过 2 分钟），请检查网络后重试"
+      );
+    } catch (error) {
+      const message = String(error && error.message ? error.message : error);
+      console.error("[import-identifier]", message);
+      return { status: "error", code: "import-failed", error: message };
+    }
   });
   ipcMain.handle("dialog:pick-directory", async () => {
     const res = await dialog.showOpenDialog(win, { properties: ["openDirectory"] });

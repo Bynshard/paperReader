@@ -7,7 +7,7 @@ const {mocks, panes}=vi.hoisted(()=>({mocks:{pdf:vi.fn(),annotations:vi.fn(),zot
 vi.mock('../src/api',()=>({api:mocks}));
 vi.mock('../src/PdfPane',()=>({default:(props:any)=>{
   panes.current[props.side]=props;
-  useEffect(()=>{const a={goTo:vi.fn(),parsePage:vi.fn().mockResolvedValue([{bbox:[1,2,3,4],text:'Page source text for summary',kind:'text'}]),getPosition:()=>({page:3,fraction:0.2})};panes.current[`${props.side}Api`]=a;props.registerApi(a);return()=>props.registerApi(null);},[props.registerApi]);
+  useEffect(()=>{const a={goTo:vi.fn(),parsePage:vi.fn().mockResolvedValue([{bbox:[1,2,3,4],text:'Page source text for summary',kind:'text'}]),getPosition:()=>({page:3,fraction:0.2}),find:vi.fn().mockResolvedValue([{page:2,bbox:[1,2,3,4]}]),getOutline:vi.fn().mockResolvedValue([{title:'Introduction',page:1,fraction:0,children:[{title:'Motivation',page:2,fraction:.1,children:[]}]}]),fit:vi.fn(()=>1.2),thumbnail:vi.fn().mockResolvedValue('')};panes.current[`${props.side}Api`]=a;props.registerApi(a);return()=>props.registerApi(null);},[props.registerApi]);
   return <button onClick={()=>props.onSelect({page:3,rects:[{x:.1,y:.1,w:.1,h:.1}],quote:'selected words',side:props.side})}>select {props.side}</button>;
 }}));
 const paper:Paper={id:'paper',title:'Example',authors:'Author',imported_at:0,updated_at:0,favorite:false,read_status:'unread',deleted:false,notes:'',categories:[],tags:[],versions:[{id:'src',paper_id:'paper',kind:'source',sha256:'x',rel_path:'x',pages:10,bytes:1,lang:'en',created_at:0},{id:'trans',paper_id:'paper',kind:'translated',sha256:'y',rel_path:'y',pages:10,bytes:1,lang:'zh',created_at:1}]};
@@ -72,5 +72,23 @@ describe('reader regression',()=>{
     mount();await screen.findByText('select source');
     expect(panes.current.source.onPageChange).toBeUndefined();
     expect(panes.current.translated.onPageChange).toBeUndefined();
+  });
+  it('finds text in the document with Ctrl+F and jumps to a match',async()=>{
+    mount();await screen.findByText('select source');
+    fireEvent.keyDown(window,{key:'f',ctrlKey:true});
+    const input=await screen.findByLabelText('文内查找关键词');
+    fireEvent.change(input,{target:{value:'memory'}});
+    fireEvent.keyDown(input,{key:'Enter'});
+    await waitFor(()=>expect(panes.current.sourceApi.find).toHaveBeenCalledWith('memory'));
+    await waitFor(()=>expect(panes.current.sourceApi.goTo).toHaveBeenCalledWith(2,0,[1,2,3,4]));
+    expect(await screen.findByText('1/1')).toBeTruthy();
+  });
+  it('loads the PDF outline beside the pages',async()=>{
+    mount();await screen.findByText('select source');
+    fireEvent.click(screen.getByRole('button',{name:'目录与页面导航'}));
+    await screen.findByText('Introduction');
+    expect(panes.current.sourceApi.getOutline).toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Motivation'));
+    expect(panes.current.sourceApi.goTo).toHaveBeenCalledWith(2,.1,undefined);
   });
 });

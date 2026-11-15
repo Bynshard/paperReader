@@ -1,8 +1,11 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("moonlight", {
   call: (method, params, timeoutMs) => ipcRenderer.invoke("api:call", { method, params, timeoutMs }),
   pickPdfs: () => ipcRenderer.invoke("dialog:pick-pdfs"),
+  importPaths: (paths) => ipcRenderer.invoke("dialog:import-paths", { paths }),
+  importIdentifier: (input) => ipcRenderer.invoke("dialog:import-identifier", { input }),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   readPdf: (paperId, kind, versionId) => ipcRenderer.invoke("pdf:bytes", { paperId, kind, versionId }),
   pickDirectory: () => ipcRenderer.invoke("dialog:pick-directory"),
   revealAttachment: (paperId, fileId) => ipcRenderer.invoke("attachment:reveal", { paperId, fileId }),

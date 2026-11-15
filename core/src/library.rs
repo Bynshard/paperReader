@@ -84,6 +84,20 @@ CREATE INDEX IF NOT EXISTS idx_chats_paper_time ON chats(paper_id, created_at DE
 
 pub type Emitter = Arc<dyn Fn(Value) + Send + Sync>;
 
+/// Effective translation-engine settings.
+///
+/// Kept next to the gateway so one saved configuration can hot-swap the
+/// loopback gateway, probe it, and drive the BabelDOC arguments without an app
+/// restart.  The key stays in memory only.
+#[derive(Clone, Debug)]
+pub struct GatewayConfig {
+    pub upstream: String,
+    pub model: String,
+    pub api_key: String,
+    pub qps: u32,
+    pub babeldoc: String,
+}
+
 pub struct Library {
     pub(crate) sync: crate::sync::Manager,
     root: PathBuf,
@@ -93,6 +107,7 @@ pub struct Library {
     conn: Mutex<Connection>,
     emitter: Mutex<Option<Emitter>>,
     gateway: Mutex<Option<Gateway>>,
+    gateway_config: Mutex<Option<GatewayConfig>>,
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
@@ -152,6 +167,7 @@ impl Library {
             conn: Mutex::new(conn),
             emitter: Mutex::new(None),
             gateway: Mutex::new(None),
+            gateway_config: Mutex::new(None),
             cancels: Mutex::new(HashMap::new()),
         });
         let weak=Arc::downgrade(&lib);
@@ -554,6 +570,13 @@ impl Library {
         crate::organization::folder_save(self,&json!({"name":name}))
     }
 
+    /// Complete title/authors/year/venue/abstract from the arXiv or Crossref
+    /// registry of this paper's own DOI/arXiv id (never a fuzzy title guess
+    /// unless the returned title matches exactly).
+    pub fn refresh_metadata(&self, params: &Value) -> Result<Value> {
+        pdfmeta::refresh_metadata(self, params)
+    }
+
     // ---- annotations ----------------------------------------------------
     pub fn list_annotations(&self, paper_id: &str) -> Result<Vec<Value>> {
         let conn = self.conn();
@@ -924,7 +947,15 @@ impl Library {
         }
         let upstream = std::env::var("MOONLIGHT_UPSTREAM").unwrap_or_else(|_| "https://opencode.ai/zen/go/v1".into());
         let model = std::env::var("MOONLIGHT_MODEL").unwrap_or_else(|_| "qwen3.8-flash".into());
+        let config = GatewayConfig {
+            upstream: upstream.clone(),
+            model: model.clone(),
+            api_key: key.clone(),
+            qps: env_qps(),
+            babeldoc: std::env::var("MOONLIGHT_BABELDOC_BIN").unwrap_or_default(),
+        };
         let gateway = engine::start_gateway(upstream, model, key, self.root.join("model-usage.jsonl"))?;
+        *self.gateway_config.lock().unwrap() = Some(config);
         *self.gateway.lock().unwrap() = Some(gateway);
         Ok(())
     }
@@ -932,6 +963,135 @@ impl Library {
     pub fn gateway(&self) -> Option<Gateway> {
         self.gateway.lock().unwrap().clone()
     }
+
+    pub fn gateway_config(&self) -> Option<GatewayConfig> {
+        self.gateway_config.lock().unwrap().clone()
+    }
+
+    /// Rebuild the loopback gateway from a saved configuration (`reload_gateway`).
+    ///
+    /// The previous gateway keeps serving until the new one is bound, so a bad
+    /// address or a missing key leaves the running configuration untouched.
+    pub fn reload_gateway(&self, params: &Value) -> Result<Value> {
+        let config = self.resolve_gateway_config(params)?;
+        let gateway = engine::start_gateway(
+            config.upstream.clone(),
+            config.model.clone(),
+            config.api_key.clone(),
+            self.root.join("model-usage.jsonl"),
+        )
+        .map_err(|err| anyhow!("模型网关重建失败：{err}"))?;
+        *self.gateway_config.lock().unwrap() = Some(config.clone());
+        *self.gateway.lock().unwrap() = Some(gateway);
+        Ok(json!({
+            "ok": true,
+            "model": config.model,
+            "base_url": config.upstream,
+            "qps": config.qps,
+            "babeldoc": config.babeldoc,
+        }))
+    }
+
+    /// Merge one request over the current (or environment) configuration.
+    fn resolve_gateway_config(&self, params: &Value) -> Result<GatewayConfig> {
+        let current = self.gateway_config();
+        let field = |key: &str| {
+            params
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let upstream = field("base_url")
+            .or_else(|| field("upstream"))
+            .or_else(|| current.as_ref().map(|config| config.upstream.clone()))
+            .unwrap_or_else(|| {
+                std::env::var("MOONLIGHT_UPSTREAM").unwrap_or_else(|_| "https://opencode.ai/zen/go/v1".into())
+            });
+        let model = field("model")
+            .or_else(|| current.as_ref().map(|config| config.model.clone()))
+            .unwrap_or_else(|| std::env::var("MOONLIGHT_MODEL").unwrap_or_else(|_| "qwen3.8-flash".into()));
+        let api_key = field("api_key")
+            .or_else(|| current.as_ref().map(|config| config.api_key.clone()).filter(|key| !key.is_empty()))
+            .or_else(|| std::env::var("MOONLIGHT_UPSTREAM_KEY").ok().filter(|key| !key.is_empty()))
+            .ok_or_else(|| anyhow!("缺少 API Key：请先填写 API Key"))?;
+        let qps = match params.get("qps").and_then(Value::as_i64) {
+            Some(value) if (1..=20).contains(&value) => value as u32,
+            Some(_) => return Err(anyhow!("翻译 QPS 应为 1–20 的整数")),
+            None => current
+                .as_ref()
+                .map(|config| config.qps)
+                .filter(|qps| (1..=20).contains(qps))
+                .unwrap_or_else(env_qps),
+        };
+        let babeldoc = match params.get("babeldoc_bin").or_else(|| params.get("babeldoc")).and_then(Value::as_str) {
+            Some(value) => value.trim().to_string(),
+            None => current.as_ref().map(|config| config.babeldoc.clone()).unwrap_or_default(),
+        };
+        Ok(GatewayConfig { upstream: engine::normalize_upstream(&upstream)?, model, api_key, qps, babeldoc })
+    }
+
+    /// Minimal chat/completions probe with the current or supplied configuration.
+    ///
+    /// Every failure is a value (`{ok:false,error}`), never a panic, so the
+    /// settings dialog can render it directly.
+    pub fn translation_probe(&self, params: &Value) -> Result<Value> {
+        let timeout = probe_timeout(params);
+        let overrides = ["base_url", "upstream", "model", "api_key"]
+            .iter()
+            .any(|key| params.get(key).and_then(Value::as_str).map_or(false, |value| !value.trim().is_empty()));
+        if !overrides {
+            if let Some(gateway) = self.gateway() {
+                return Ok(engine::probe_gateway(&gateway, timeout));
+            }
+        }
+        let config = match self.resolve_gateway_config(params) {
+            Ok(config) => config,
+            Err(err) => return Ok(json!({"ok": false, "error": err.to_string()})),
+        };
+        // An unsaved edit in the settings dialog is probed directly: testing a
+        // connection must never replace the live gateway.
+        let target = Gateway { base_url: config.upstream, token: config.api_key, model: config.model };
+        Ok(engine::probe_gateway(&target, timeout))
+    }
+
+    /// Locate BabelDOC: saved path first, then MOONLIGHT_BABELDOC_BIN, then PATH.
+    pub fn check_babeldoc(&self, params: &Value) -> Result<Value> {
+        let requested = params.get("path").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty());
+        let configured = self.gateway_config().map(|config| config.babeldoc).filter(|value| !value.trim().is_empty());
+        Ok(engine::check_babeldoc(requested.or(configured.as_deref())))
+    }
+
+    /// QPS and BabelDOC binary applied by the last save (environment fallback).
+    pub fn translation_engine_options(&self) -> (u32, PathBuf) {
+        let config = self.gateway_config();
+        let qps = config
+            .as_ref()
+            .map(|config| config.qps)
+            .filter(|qps| (1..=20).contains(qps))
+            .unwrap_or_else(env_qps);
+        let babeldoc = config
+            .as_ref()
+            .map(|config| config.babeldoc.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(engine::babeldoc_bin);
+        (qps, babeldoc)
+    }
+}
+
+fn env_qps() -> u32 {
+    std::env::var("MOONLIGHT_QPS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| (1..=20).contains(value))
+        .unwrap_or(6)
+}
+
+fn probe_timeout(params: &Value) -> std::time::Duration {
+    let millis = params.get("timeout_ms").and_then(Value::as_i64).unwrap_or(15_000).clamp(250, 60_000);
+    std::time::Duration::from_millis(millis as u64)
 }
 
 fn bibtex(p: &Value) -> String {
@@ -970,4 +1130,258 @@ fn ris(p: &Value) -> String {
     }
     lines.push("ER  - ".into());
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod gateway_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use tiny_http::{Header, Response, Server};
+
+    #[derive(Debug)]
+    struct SeenRequest {
+        path: String,
+        auth: String,
+        body: Value,
+    }
+
+    struct FakeUpstream {
+        base_url: String,
+        seen: Arc<Mutex<Vec<SeenRequest>>>,
+    }
+
+    /// A loopback upstream that speaks just enough chat/completions for the
+    /// gateway and the probe.  Tests never touch the real network.
+    fn fake_upstream(status: u16, reply: &str, delay: Duration) -> FakeUpstream {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = match server.server_addr() {
+            tiny_http::ListenAddr::IP(addr) => addr.port(),
+            _ => panic!("fake upstream must listen on an IP address"),
+        };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
+        let reply = reply.to_string();
+        std::thread::spawn(move || {
+            for mut request in server.incoming_requests() {
+                let path = request.url().to_string();
+                let auth = request
+                    .headers()
+                    .iter()
+                    .find(|header| header.field.equiv("Authorization"))
+                    .map(|header| header.value.as_str().to_string())
+                    .unwrap_or_default();
+                let mut body = String::new();
+                let _ = request.as_reader().read_to_string(&mut body);
+                recorded.lock().unwrap().push(SeenRequest {
+                    path,
+                    auth,
+                    body: serde_json::from_str(&body).unwrap_or(Value::Null),
+                });
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+                let payload = if status == 200 {
+                    json!({"choices": [{"message": {"role": "assistant", "content": reply}}], "usage": {"total_tokens": 3}})
+                } else {
+                    json!({"error": {"message": "invalid api key", "type": "authentication_error"}})
+                };
+                let mut response = Response::from_string(payload.to_string()).with_status_code(status);
+                response.add_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+                let _ = request.respond(response);
+            }
+        });
+        FakeUpstream { base_url: format!("http://127.0.0.1:{port}/v1"), seen }
+    }
+
+    fn temp_library() -> (Arc<Library>, PathBuf) {
+        let root = std::env::temp_dir().join(format!("moonlight-gateway-{}", Uuid::new_v4()));
+        let lib = Library::new(&root).unwrap();
+        (lib, root)
+    }
+
+    /// A developer shell may export a real credential; such tests only assert
+    /// the paths that do not depend on the environment.
+    fn no_environment_key() -> bool {
+        std::env::var("MOONLIGHT_UPSTREAM_KEY").map_or(true, |value| value.trim().is_empty())
+    }
+
+    #[test]
+    fn reload_gateway_rebuilds_the_gateway_and_chat_uses_the_new_upstream() {
+        let (lib, root) = temp_library();
+        let first = fake_upstream(200, "first", Duration::ZERO);
+        let saved = lib
+            .reload_gateway(&json!({"base_url": first.base_url, "model": "academic-test", "api_key": "fixture-key", "qps": 3}))
+            .unwrap();
+        assert_eq!(saved["ok"], json!(true), "{saved}");
+        assert_eq!(saved["model"], json!("academic-test"));
+        assert_eq!(saved["qps"], json!(3));
+        assert_eq!(saved["base_url"], json!(first.base_url));
+        let gateway = lib.gateway().unwrap();
+        assert!(gateway.base_url.starts_with("http://127.0.0.1:"), "{}", gateway.base_url);
+        assert!(gateway.base_url.ends_with("/v1"), "{}", gateway.base_url);
+        assert_eq!(gateway.model, "academic-test");
+        let first_gateway_url = gateway.base_url.clone();
+        assert_eq!(
+            engine::chat(&gateway, vec![json!({"role": "user", "content": "ping"})], 0.0).unwrap(),
+            "first"
+        );
+        {
+            let seen = first.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].path, "/v1/chat/completions");
+            assert_eq!(seen[0].auth, "Bearer fixture-key");
+            assert_eq!(seen[0].body["model"], json!("academic-test"));
+        }
+
+        // A second save swaps the live gateway again: no restart, no stale host.
+        let second = fake_upstream(200, "second", Duration::ZERO);
+        lib.reload_gateway(&json!({"base_url": second.base_url, "model": "academic-v2", "api_key": "second-key", "qps": 5}))
+            .unwrap();
+        let gateway = lib.gateway().unwrap();
+        assert_ne!(gateway.base_url, first_gateway_url, "重新加载后必须换成新的本地网关");
+        assert_eq!(gateway.model, "academic-v2");
+        assert_eq!(
+            engine::chat(&gateway, vec![json!({"role": "user", "content": "ping"})], 0.0).unwrap(),
+            "second"
+        );
+        assert_eq!(second.seen.lock().unwrap()[0].auth, "Bearer second-key");
+        let (qps, _) = lib.translation_engine_options();
+        assert_eq!(qps, 5);
+        drop(lib);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reload_gateway_is_readable_and_keeps_the_live_gateway_on_failure() {
+        let (lib, root) = temp_library();
+        let first = fake_upstream(200, "first", Duration::ZERO);
+        lib.reload_gateway(&json!({"base_url": first.base_url, "model": "academic-test", "api_key": "fixture-key"}))
+            .unwrap();
+        let live = lib.gateway().unwrap();
+        let bad_scheme = lib.reload_gateway(&json!({"base_url": "file:///tmp/model.sock"})).unwrap_err().to_string();
+        assert!(bad_scheme.contains("http"), "{bad_scheme}");
+        let bad_qps = lib.reload_gateway(&json!({"qps": 0})).unwrap_err().to_string();
+        assert!(bad_qps.contains("QPS"), "{bad_qps}");
+        assert_eq!(lib.gateway().unwrap().base_url, live.base_url);
+        if no_environment_key() {
+            let (fresh, fresh_root) = temp_library();
+            let missing = fresh
+                .reload_gateway(&json!({"base_url": "https://provider.example/v1", "model": "academic-test"}))
+                .unwrap_err()
+                .to_string();
+            assert!(missing.contains("API Key"), "{missing}");
+            drop(fresh);
+            std::fs::remove_dir_all(fresh_root).unwrap();
+        }
+        drop(lib);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn translation_probe_reports_success_latency_and_model() {
+        let (lib, root) = temp_library();
+        let upstream = fake_upstream(200, "pong", Duration::ZERO);
+        lib.reload_gateway(&json!({"base_url": upstream.base_url, "model": "academic-test", "api_key": "fixture-key"}))
+            .unwrap();
+        let live_gateway = lib.gateway().unwrap().base_url;
+        let result = lib.translation_probe(&json!({})).unwrap();
+        assert_eq!(result["ok"], json!(true), "{result}");
+        assert_eq!(result["model"], json!("academic-test"));
+        assert!(result["latency_ms"].as_u64().is_some(), "{result}");
+        let seen = upstream.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].path, "/v1/chat/completions");
+        assert_eq!(seen[0].body["messages"][0]["role"], json!("user"));
+        assert!(seen[0].body["max_tokens"].as_u64().unwrap() <= 16);
+        drop(seen);
+
+        // Unsaved edits are probed directly and never replace the live gateway.
+        let draft = fake_upstream(200, "pong", Duration::ZERO);
+        let result = lib.translation_probe(&json!({"base_url": draft.base_url, "model": "draft-model"})).unwrap();
+        assert_eq!(result["ok"], json!(true), "{result}");
+        assert_eq!(result["model"], json!("draft-model"));
+        assert_eq!(draft.seen.lock().unwrap()[0].auth, "Bearer fixture-key");
+        assert_eq!(lib.gateway().unwrap().base_url, live_gateway);
+        drop(lib);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn translation_probe_reports_401_key_errors() {
+        let (lib, root) = temp_library();
+        let upstream = fake_upstream(401, "", Duration::ZERO);
+        lib.reload_gateway(&json!({"base_url": upstream.base_url, "model": "academic-test", "api_key": "bad-key"}))
+            .unwrap();
+        let result = lib.translation_probe(&json!({})).unwrap();
+        assert_eq!(result["ok"], json!(false), "{result}");
+        let error = result["error"].as_str().unwrap();
+        assert!(error.contains("401"), "{error}");
+        assert!(error.contains("Key 无效"), "{error}");
+        drop(lib);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn translation_probe_times_out_instead_of_hanging() {
+        let (lib, root) = temp_library();
+        let upstream = fake_upstream(200, "late", Duration::from_millis(1500));
+        lib.reload_gateway(&json!({"base_url": upstream.base_url, "model": "academic-test", "api_key": "fixture-key"}))
+            .unwrap();
+        let started = Instant::now();
+        let result = lib.translation_probe(&json!({"timeout_ms": 250})).unwrap();
+        assert_eq!(result["ok"], json!(false), "{result}");
+        assert!(result["error"].as_str().unwrap().contains("超时"), "{result}");
+        assert!(started.elapsed() < Duration::from_millis(1400), "探针必须按超时立即返回");
+        drop(lib);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn translation_probe_reports_unreachable_hosts_and_missing_keys() {
+        let (lib, root) = temp_library();
+        let unreachable = lib
+            .translation_probe(&json!({"base_url": "http://127.0.0.1:1/v1", "model": "m", "api_key": "k", "timeout_ms": 2000}))
+            .unwrap();
+        assert_eq!(unreachable["ok"], json!(false), "{unreachable}");
+        assert!(unreachable["error"].as_str().unwrap().contains("网络错误"), "{unreachable}");
+        if no_environment_key() {
+            let missing = lib.translation_probe(&json!({})).unwrap();
+            assert_eq!(missing["ok"], json!(false), "{missing}");
+            assert!(missing["error"].as_str().unwrap().contains("API Key"), "{missing}");
+        }
+        drop(lib);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_babeldoc_uses_the_hot_reloaded_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let (lib, root) = temp_library();
+        let upstream = fake_upstream(200, "pong", Duration::ZERO);
+        let binary = root.join("babeldoc");
+        std::fs::write(&binary, "#!/bin/sh\necho 'babeldoc 0.6.0'\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let binary_text = binary.to_string_lossy().to_string();
+        lib.reload_gateway(&json!({
+            "base_url": upstream.base_url,
+            "model": "academic-test",
+            "api_key": "fixture-key",
+            "qps": 4,
+            "babeldoc_bin": binary_text,
+        }))
+        .unwrap();
+        let found = lib.check_babeldoc(&json!({})).unwrap();
+        assert_eq!(found["ok"], json!(true), "{found}");
+        assert_eq!(found["path"].as_str().unwrap(), binary_text);
+        assert_eq!(found["version"], json!("babeldoc 0.6.0"));
+        let (qps, configured) = lib.translation_engine_options();
+        assert_eq!(qps, 4);
+        assert_eq!(configured, binary);
+        let missing = lib.check_babeldoc(&json!({"path": format!("{}/babeldoc", root.join("nope").display())})).unwrap();
+        assert_eq!(missing["ok"], json!(false), "{missing}");
+        assert!(missing["error"].as_str().unwrap().contains("未找到"), "{missing}");
+        drop(lib);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
