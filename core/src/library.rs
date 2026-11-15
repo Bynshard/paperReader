@@ -1343,7 +1343,13 @@ mod gateway_tests {
             .translation_probe(&json!({"base_url": "http://127.0.0.1:1/v1", "model": "m", "api_key": "k", "timeout_ms": 2000}))
             .unwrap();
         assert_eq!(unreachable["ok"], json!(false), "{unreachable}");
-        assert!(unreachable["error"].as_str().unwrap().contains("网络错误"), "{unreachable}");
+        // Windows may report a closed loopback port as an exhausted timeout
+        // instead of an immediate connection error; either is a readable failure.
+        let unreachable_error = unreachable["error"].as_str().unwrap();
+        assert!(
+            unreachable_error.contains("网络错误") || unreachable_error.contains("超时") || unreachable_error.contains("连接"),
+            "{unreachable}"
+        );
         if no_environment_key() {
             let missing = lib.translation_probe(&json!({})).unwrap();
             assert_eq!(missing["ok"], json!(false), "{missing}");
