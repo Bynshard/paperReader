@@ -28,7 +28,7 @@ try{
  await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});},path.join(output,'fixture.pdf'));
  await page.getByRole('button',{name:'导入 PDF',exact:true}).first().click();await page.locator('.paper-row').waitFor();
  await page.locator('button[aria-label^="更多操作"]').first().click();await page.getByRole('button',{name:'编辑资料',exact:true}).click();
- await page.getByLabel('标题',{exact:true}).fill('Windows packaged test');await page.getByLabel('论文笔记').fill('Windows 中文笔记');await page.getByLabel('论文标签').fill('Windows, CI');
+ await page.getByLabel('标题',{exact:true}).fill('Windows packaged test');await page.getByLabel('论文笔记').fill('Windows 中文笔记');await page.getByRole('textbox',{name:'论文标签'}).fill('Windows, CI');
  await page.getByRole('button',{name:'保存资料',exact:true}).click();await page.locator('.paper-title').filter({hasText:'Windows packaged test'}).waitFor();
  report.steps.push('Native file chooser, import, metadata, notes and tags');
  await page.locator('.paper-title').dblclick();await page.locator('.pane-source canvas[data-rendered="true"]').first().waitFor();report.steps.push('PDF.js renders through file protocol and native IPC');

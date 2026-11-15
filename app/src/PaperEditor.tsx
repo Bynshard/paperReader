@@ -125,7 +125,7 @@ export default function PaperEditor({ paper, onSaved, onClose }: { paper: Paper;
           </div>
         </fieldset>
 
-        <fieldset className="pill-field" aria-label="论文标签">
+        <fieldset className="pill-field" aria-label="标签选择">
           <legend>标签</legend>
           <label className="field">标签（逗号分隔）<input aria-label="论文标签" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="例如：强化学习, 待读" /></label>
           <div className="pill-list">
