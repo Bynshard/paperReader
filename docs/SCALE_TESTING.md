@@ -16,7 +16,7 @@
 
 需要 Node 22+、Rust/Cargo 已准备的离线依赖、Python 环境中的 `requirements-validation.txt`，以及已安装的 rclone。项目整体回归失败即停止，结果写 JSON：
 
-`.github/workflows/validate.yml` 提供 push/PR 回归与手动万篇/浏览器验收。当前目录没有 Git 远端，工作流尚未在 GitHub 执行；本机运行的是同一验证脚本。规模预算失败不会被 CI 转成通过。
+当前 `.github/workflows/validate.yml` 仅执行 Windows 的单元/协议测试、原生 smoke、打包和包后桌面验收，已在 GitHub 成功运行；它不包含本说明的整套万篇/浏览器压力测试。万篇基准在本机单独执行，使用 `--enforce` 时预算失败返回非零；将其补入 Windows 性能门禁见 [R05/R16](PRODUCT_READINESS.md)。
 
 ```bash
 PATH="$HOME/.local/node22/bin:$PATH" .venv/bin/python scripts/validate_project.py

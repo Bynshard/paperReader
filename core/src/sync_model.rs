@@ -1,7 +1,7 @@
 //! Portable sync documents and three-way merge. SQLite stays local; PDFs and
 //! metadata commits travel independently, never a live database file.
 use anyhow::{anyhow, Result};
-use rusqlite::{params, params_from_iter, types::{Value as SqlValue,ValueRef}, Connection};
+use rusqlite::{params, params_from_iter, types::{Value as SqlValue,ValueRef}, Connection, OptionalExtension};
 use serde_json::{json,Map,Value};
 use std::{collections::{BTreeMap,BTreeSet}, path::{Component,Path}};
 
@@ -74,6 +74,68 @@ pub fn load(conn:&Connection,key:&str)->Result<Value> {
 
 /// Merge independent fields and independent keyed child records. A concurrent
 /// deletion and edit conflicts as a whole; timestamps are bookkeeping only.
+/// Reading position is a per-device cursor rather than document content: both
+/// ends advance it independently, so the newest `last_read_at` wins and no
+/// conflict is recorded. Without this, every sync after reading on either side
+/// would add four conflict records (`/paper/last_read_*`).
+fn unify_reading_position(local: &mut Value, remote: &mut Value) {
+    let (Some(local_at), Some(remote_at)) = (
+        local["paper"]["last_read_at"].as_i64(),
+        remote["paper"]["last_read_at"].as_i64(),
+    ) else { return };
+    if local_at == remote_at { return; }
+    let (from, into) = if local_at > remote_at { (local.clone(), remote) } else { (remote.clone(), local) };
+    for key in ["last_read_page", "last_read_fraction", "last_read_mode", "last_read_at"] {
+        if let Some(value) = from["paper"].get(key) {
+            if let Some(paper) = into["paper"].as_object_mut() { paper.insert(key.into(), value.clone()); }
+        }
+    }
+}
+
+/// `generated_at` of a cached digest, or `None` when the TEXT column is NULL,
+/// missing or no longer a JSON object with a numeric timestamp. Anything
+/// unparseable is treated as "no digest": it can only be replaced, never
+/// ordered against another generation.
+fn digest_generated_at(raw: &Value) -> Option<i64> {
+    let digest: Value = serde_json::from_str(raw.as_str()?).ok()?;
+    let at = digest.get("generated_at")?;
+    at.as_i64().or_else(|| at.as_f64().map(|value| value as i64))
+}
+
+/// The digest cache (`papers.digest_json`) is derived content refreshed
+/// independently on each device, so it follows the same rule as the reading
+/// cursor: the newest generation wins and is written into both documents
+/// before `walk` runs. Without this, any digest generated on two devices would
+/// surface as a `/paper/digest_json` conflict even though no user data differs.
+///
+/// A NULL/missing/malformed cache loses to a readable one; two readable caches
+/// are ordered by `generated_at` and a tie keeps local, which also keeps the
+/// merge deterministic for replayed commits. Only two different opaque values
+/// are left untouched for `walk`, since neither can be dated.
+fn unify_digest(local: &mut Value, remote: &mut Value) {
+    fn read(doc: &Value) -> Option<Value> { doc.get("paper")?.get("digest_json").cloned() }
+    fn present(raw: &Option<Value>) -> bool { raw.as_ref().is_some_and(|value| !value.is_null()) }
+    let (local_raw, remote_raw) = (read(local), read(remote));
+    let (local_at, remote_at) = (
+        local_raw.as_ref().and_then(digest_generated_at),
+        remote_raw.as_ref().and_then(digest_generated_at),
+    );
+    let winner = match (local_at, remote_at) {
+        (Some(local_at), Some(remote_at)) => if remote_at > local_at { remote_raw.clone() } else { local_raw.clone() },
+        (Some(_), None) => local_raw.clone(),
+        (None, Some(_)) => remote_raw.clone(),
+        (None, None) => match (present(&local_raw), present(&remote_raw)) {
+            (true, false) => local_raw.clone(),
+            (false, true) => remote_raw.clone(),
+            _ => None,
+        },
+    };
+    let Some(winner) = winner.filter(|value| !value.is_null()) else { return };
+    for doc in [local, remote] {
+        if let Some(paper) = doc.get_mut("paper").and_then(Value::as_object_mut) { paper.insert("digest_json".into(), winner.clone()); }
+    }
+}
+
 pub fn merge(base:&Value,local:&Value,remote:&Value,prefer_remote:bool)->(Value,Vec<String>) {
     fn walk(b:&Value,l:&Value,r:&Value,path:&str,prefer:bool,conflicts:&mut Vec<String>)->Value {
         if l==r || r==b {return l.clone();} if l==b {return r.clone();}
@@ -92,7 +154,12 @@ pub fn merge(base:&Value,local:&Value,remote:&Value,prefer_remote:bool)->(Value,
         }
         conflicts.push(path.into());if prefer {r.clone()}else{l.clone()}
     }
-    let mut conflicts=vec![];let value=walk(base,local,remote,"",prefer_remote,&mut conflicts);(value,conflicts)
+    // Normalise the reading cursor and the digest cache first so `walk` sees
+    // identical values there and never reports them as conflicts.
+    let (mut local_owned, mut remote_owned) = (local.clone(), remote.clone());
+    unify_reading_position(&mut local_owned, &mut remote_owned);
+    unify_digest(&mut local_owned, &mut remote_owned);
+    let mut conflicts=vec![];let value=walk(base,&local_owned,&remote_owned,"",prefer_remote,&mut conflicts);(value,conflicts)
 }
 fn upsert(conn:&Connection,table:&str,row:&Value)->Result<()> {
     let object=row.as_object().ok_or_else(||anyhow!("invalid {table} row"))?;
@@ -126,11 +193,34 @@ pub fn validate(key:&str,doc:&Value)->Result<()> {
 pub fn apply(conn:&Connection,key:&str,doc:&Value)->Result<()> {
     validate(key,doc)?;
     if let Some(name)=key.strip_prefix("tag:") {
-        // Taxonomy is append-only; removing a paper's membership is synced in
-        // that paper. There is no global taxonomy-delete UI yet.
-        if !doc.is_null() {conn.execute("INSERT INTO tags(id,name,color) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET color=excluded.color",params![super::sync::digest(&format!("tag:{name}")),name,doc["color"].as_str()])?;}return Ok(());
+        if doc.is_null() {
+            // Deletion commit: the tag row and every paper membership vanish.
+            // Look the id up first so a repeated (or already applied) delete is
+            // a harmless no-op instead of a constraint error.
+            let tag_id=conn.query_row("SELECT id FROM tags WHERE name=?",params![name],|r|r.get::<_,String>(0)).optional()?;
+            if let Some(tag_id)=tag_id {
+                conn.execute("DELETE FROM paper_tags WHERE tag_id=?",params![tag_id])?;
+                conn.execute("DELETE FROM tags WHERE id=?",params![tag_id])?;
+            }
+            return Ok(());
+        }
+        // Additive taxonomy: a non-deleted commit only paints the colour.
+        conn.execute("INSERT INTO tags(id,name,color) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET color=excluded.color",params![super::sync::digest(&format!("tag:{name}")),name,doc["color"].as_str()])?;
+        return Ok(());
     }
-    if key.starts_with("category:") {if !doc.is_null(){upsert(conn,"categories",doc)?;}return Ok(());}
+    if let Some(id)=key.strip_prefix("category:") {
+        if doc.is_null() {
+            // Mirror folder_delete: lift direct children to the deleted
+            // folder's parent first so no folder becomes an orphan, then drop
+            // the paper links and the folder itself.
+            conn.execute("UPDATE categories SET parent_id=(SELECT parent_id FROM categories WHERE id=?) WHERE parent_id=?",params![id,id])?;
+            conn.execute("DELETE FROM paper_categories WHERE category_id=?",params![id])?;
+            conn.execute("DELETE FROM categories WHERE id=?",params![id])?;
+            return Ok(());
+        }
+        upsert(conn,"categories",doc)?;
+        return Ok(());
+    }
     let id=key.strip_prefix("paper:").ok_or_else(||anyhow!("invalid document"))?;
     if doc.is_null() {
         conn.execute("DELETE FROM papers WHERE id=?",[id])?;return Ok(());
@@ -161,6 +251,67 @@ mod tests {
         assert_eq!(merge(&base,&local,&Value::Null,false).0,local);assert!(!merge(&base,&local,&Value::Null,false).1.is_empty());
         assert_eq!(merge(&base,&local,&remote,true).0,remote);
     }
+    #[test] fn reading_position_follows_the_newest_cursor_without_conflicts() {
+        let base=json!({"paper":{"title":"t","last_read_page":1,"last_read_fraction":0.1,"last_read_mode":"source","last_read_at":100},"annotations":{}});
+        let local=json!({"paper":{"title":"t","last_read_page":7,"last_read_fraction":0.7,"last_read_mode":"dual","last_read_at":200},"annotations":{}});
+        let remote=json!({"paper":{"title":"t","last_read_page":3,"last_read_fraction":0.3,"last_read_mode":"translated","last_read_at":300},"annotations":{}});
+        let(merged,conflicts)=merge(&base,&local,&remote,false);
+        assert!(conflicts.is_empty(),"{conflicts:?}");
+        assert_eq!(merged["paper"]["last_read_page"],json!(3));
+        assert_eq!(merged["paper"]["last_read_mode"],json!("translated"));
+        assert_eq!(merged["paper"]["last_read_at"],json!(300));
+        // Ordinary fields still merge field-by-field and keep their conflicts.
+        let local=json!({"paper":{"title":"mine","last_read_at":200},"annotations":{}});
+        let remote=json!({"paper":{"title":"theirs","last_read_at":300},"annotations":{}});
+        let(merged,conflicts)=merge(&base,&local,&remote,false);
+        assert_eq!(merged["paper"]["title"],json!("mine"));
+        assert_eq!(conflicts,vec!["/paper/title".to_string()],"only the edited field conflicts");
+    }
+
+    #[test] fn digest_cache_follows_the_newest_generation_without_conflicts() {
+        let digest=|at:i64,body:&str|json!({"markdown":body,"generated_at":at,"model":"test"}).to_string();
+        let base=json!({"paper":{"id":"p","title":"t","digest_json":digest(100,"old")},"annotations":{}});
+        let local=json!({"paper":{"id":"p","title":"t","digest_json":digest(200,"mine")},"annotations":{}});
+        let remote=json!({"paper":{"id":"p","title":"t","digest_json":digest(300,"theirs")},"annotations":{}});
+        let(merged,conflicts)=merge(&base,&local,&remote,false);
+        assert!(conflicts.is_empty(),"{conflicts:?}");
+        assert_eq!(merged["paper"]["digest_json"],json!(digest(300,"theirs")));
+        // Local is newer: it wins over an older remote generation.
+        let local=json!({"paper":{"id":"p","title":"t","digest_json":digest(400,"mine")},"annotations":{}});
+        let remote=json!({"paper":{"id":"p","title":"t","digest_json":digest(350,"theirs")},"annotations":{}});
+        let(merged,conflicts)=merge(&base,&local,&remote,false);
+        assert!(conflicts.is_empty(),"{conflicts:?}");
+        assert_eq!(merged["paper"]["digest_json"],json!(digest(400,"mine")));
+        // Equal `generated_at` keeps local deterministically, even when the
+        // remote side is preferred for ordinary fields.
+        let remote=json!({"paper":{"id":"p","title":"t","digest_json":digest(400,"theirs")},"annotations":{}});
+        let(merged,conflicts)=merge(&base,&local,&remote,true);
+        assert!(conflicts.is_empty(),"{conflicts:?}");
+        assert_eq!(merged["paper"]["digest_json"],json!(digest(400,"mine")));
+    }
+    #[test] fn digest_cache_treats_null_and_malformed_values_as_absent() {
+        let digest=|at:i64,body:&str|json!({"markdown":body,"generated_at":at,"model":"test"}).to_string();
+        let base=json!({"paper":{"id":"p","title":"t","digest_json":digest(100,"old")},"annotations":{}});
+        let remote=json!({"paper":{"id":"p","title":"t","digest_json":digest(200,"fresh")},"annotations":{}});
+        // A cleared cache on one device must not erase the digest generated on
+        // the other side.
+        let local=json!({"paper":{"id":"p","title":"t","digest_json":Value::Null},"annotations":{}});
+        let(merged,conflicts)=merge(&base,&local,&remote,false);
+        assert!(conflicts.is_empty(),"{conflicts:?}");
+        assert_eq!(merged["paper"]["digest_json"],json!(digest(200,"fresh")));
+        // Malformed TEXT is "no digest" and loses to the readable remote one,
+        // instead of surfacing a conflict the user cannot act on.
+        let local=json!({"paper":{"id":"p","title":"t","digest_json":"{\"markdown\":"},"annotations":{}});
+        let(merged,conflicts)=merge(&base,&local,&remote,false);
+        assert!(conflicts.is_empty(),"{conflicts:?}");
+        assert_eq!(merged["paper"]["digest_json"],json!(digest(200,"fresh")));
+        // With neither side parseable, a present value still beats NULL.
+        let remote=json!({"paper":{"id":"p","title":"t","digest_json":Value::Null},"annotations":{}});
+        let(merged,conflicts)=merge(&base,&local,&remote,false);
+        assert!(conflicts.is_empty(),"{conflicts:?}");
+        assert_eq!(merged["paper"]["digest_json"],json!("{\"markdown\":"));
+    }
+
     #[test] fn rejects_unsafe_paths() {for path in ["../library.db","files/../../outside",".sync/config","/tmp/x","files/C:\\x","files\\x"] {assert!(!safe_path(path));}assert!(safe_path("imports/zotero/a/file.pdf"));}
     #[test] fn incoming_upserts_update_the_journal_without_unique_conflicts() {
         let root=std::env::temp_dir().join(format!("moonlight-sync-journal-{}",uuid::Uuid::new_v4()));
@@ -171,6 +322,42 @@ mod tests {
         {let conn=lib.conn();let tx=conn.unchecked_transaction().unwrap();apply(&tx,"paper:p",&doc).unwrap();apply(&tx,"paper:p",&doc).unwrap();tx.commit().unwrap();}
         let revision:i64=lib.conn().query_row("SELECT revision FROM sync_dirty WHERE key='paper:p'",[],|r|r.get(0)).unwrap();
         assert!(revision>before);assert_eq!(load(&lib.conn(),"paper:p").unwrap()["paper"]["title"],"Updated");
+        drop(lib);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test] fn deletion_commits_remove_folders_tags_and_their_links() {
+        let root=std::env::temp_dir().join(format!("moonlight-sync-delete-{}",uuid::Uuid::new_v4()));
+        let lib=crate::library::Library::new(&root).unwrap();
+        {
+            let conn=lib.conn();
+            conn.execute("INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES('p','Paper','',0,0)",[]).unwrap();
+            conn.execute("INSERT INTO categories(id,name,parent_id,sort_order) VALUES('top','Top',NULL,0)",[]).unwrap();
+            conn.execute("INSERT INTO categories(id,name,parent_id,sort_order) VALUES('mid','Mid','top',0)",[]).unwrap();
+            conn.execute("INSERT INTO categories(id,name,parent_id,sort_order) VALUES('leaf','Leaf','mid',0)",[]).unwrap();
+            conn.execute("INSERT INTO paper_categories(paper_id,category_id) VALUES('p','mid')",[]).unwrap();
+            conn.execute("INSERT INTO tags(id,name,color) VALUES('tag-1','ml',NULL)",[]).unwrap();
+            conn.execute("INSERT INTO paper_tags(paper_id,tag_id) VALUES('p','tag-1')",[]).unwrap();
+        }
+        {
+            let conn=lib.conn();let tx=conn.unchecked_transaction().unwrap();
+            apply(&tx,"category:mid",&Value::Null).unwrap();
+            apply(&tx,"tag:ml",&Value::Null).unwrap();
+            // A replayed delete commit must stay a no-op instead of failing.
+            apply(&tx,"category:mid",&Value::Null).unwrap();
+            apply(&tx,"tag:ml",&Value::Null).unwrap();
+            tx.commit().unwrap();
+        }
+        {
+            let conn=lib.conn();
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM categories WHERE id='mid'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM paper_categories WHERE category_id='mid'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+            assert_eq!(conn.query_row("SELECT parent_id FROM categories WHERE id='leaf'",[],|r|r.get::<_,Option<String>>(0)).unwrap().as_deref(),Some("top"));
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM tags WHERE name='ml'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM paper_tags WHERE tag_id='tag-1'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        }
+        // A deleted taxonomy entry must not be exported back to peers.
+        let exported=export(&lib.conn()).unwrap();
+        assert!(!exported.contains_key("category:mid"));
+        assert!(!exported.contains_key("tag:ml"));
         drop(lib);std::fs::remove_dir_all(root).unwrap();
     }
 }

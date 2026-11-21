@@ -9,22 +9,22 @@
     {
       "id": "translation_coverage",
       "target": "overall >= 0.95, every page >= 0.9",
-      "status": "fail",
-      "overall": 0.945,
-      "worst_page": 0.8667,
+      "status": "pass",
+      "overall": 0.9902,
+      "worst_page": 0.9286,
       "method": "CJK span presence inside each required block rectangle (see metrics.py)"
     },
     {
       "id": "paragraph_start_offset",
       "target": ">= 0.95 of translated blocks within 3% of page size",
       "status": "fail",
-      "value": 0.8548
+      "value": 0.9259
     },
     {
       "id": "font_readability",
       "target": "translated body text >= 8pt and >= 75% of source size",
       "status": "fail",
-      "value": 0.9839
+      "value": 0.9877
     },
     {
       "id": "fallback_transparency",
@@ -135,15 +135,15 @@
           "issues": []
         },
         "overall": {
-          "required_blocks": 53,
+          "required_blocks": 51,
           "translated": 50,
-          "retained_source": 2,
+          "retained_source": 0,
           "failed": 1,
-          "coverage": 0.9434,
+          "coverage": 0.9804,
           "font_below_threshold": 0,
           "font_ok_ratio": 1.0,
           "start_offset_median": 0.0059,
-          "start_offset_p95": 0.0248,
+          "start_offset_p95": 0.007,
           "start_offset_within_limit_ratio": 0.96
         },
         "per_page": {
@@ -169,18 +169,18 @@
             "coverage": 1.0
           },
           "4": {
-            "required": 15,
+            "required": 14,
             "translated": 13,
-            "retained_source": 1,
+            "retained_source": 0,
             "failed": 1,
-            "coverage": 0.8667
+            "coverage": 0.9286
           },
           "7": {
-            "required": 15,
+            "required": 14,
             "translated": 14,
-            "retained_source": 1,
+            "retained_source": 0,
             "failed": 0,
-            "coverage": 0.9333
+            "coverage": 1.0
           },
           "11": {
             "required": 0,
@@ -710,7 +710,7 @@
             "source_font_size": 8.97,
             "target_font_size": 8.52,
             "font_ok": true,
-            "start_offset_ratio": 0.0253,
+            "start_offset_ratio": 0.0044,
             "notes": ""
           },
           {
@@ -1586,10 +1586,10 @@
           {
             "page": 3,
             "block_index": 9,
-            "kind": "body",
-            "required": true,
-            "status": "retained_source",
-            "reason": "source-language text still present in the mapped area",
+            "kind": "formula_label",
+            "required": false,
+            "status": "not_required",
+            "reason": "formula object: preserved, not body prose",
             "source_rect": [
               219.97,
               465.58,
@@ -1615,10 +1615,10 @@
           {
             "page": 3,
             "block_index": 10,
-            "kind": "formula",
+            "kind": "formula_label",
             "required": false,
             "status": "not_required",
-            "reason": "standalone formula: preserved as object",
+            "reason": "formula object: preserved, not body prose",
             "source_rect": [
               358.08,
               473.0,
@@ -2195,10 +2195,10 @@
           {
             "page": 6,
             "block_index": 11,
-            "kind": "footnote",
+            "kind": "formula_label",
             "required": false,
             "status": "not_required",
-            "reason": "footnote / small print",
+            "reason": "formula object: preserved, not body prose",
             "source_rect": [
               162.89,
               617.54,
@@ -2224,10 +2224,10 @@
           {
             "page": 6,
             "block_index": 12,
-            "kind": "body",
-            "required": true,
-            "status": "retained_source",
-            "reason": "source-language text still present in the mapped area",
+            "kind": "formula_label",
+            "required": false,
+            "status": "not_required",
+            "reason": "formula object: preserved, not body prose",
             "source_rect": [
               202.8,
               617.69,
@@ -3530,21 +3530,21 @@
           "issues": []
         },
         "overall": {
-          "required_blocks": 131,
-          "translated": 124,
-          "retained_source": 7,
+          "required_blocks": 81,
+          "translated": 81,
+          "retained_source": 0,
           "failed": 0,
-          "coverage": 0.9466,
-          "font_below_threshold": 2,
-          "font_ok_ratio": 0.9839,
-          "start_offset_median": 0.0166,
-          "start_offset_p95": 0.0698,
-          "start_offset_within_limit_ratio": 0.8548
+          "coverage": 1.0,
+          "font_below_threshold": 1,
+          "font_ok_ratio": 0.9877,
+          "start_offset_median": 0.0055,
+          "start_offset_p95": 0.043,
+          "start_offset_within_limit_ratio": 0.9259
         },
         "per_page": {
           "1": {
-            "required": 9,
-            "translated": 9,
+            "required": 8,
+            "translated": 8,
             "retained_source": 0,
             "failed": 0,
             "coverage": 1.0
@@ -3557,15 +3557,15 @@
             "coverage": 1.0
           },
           "3": {
-            "required": 37,
-            "translated": 34,
-            "retained_source": 3,
+            "required": 33,
+            "translated": 33,
+            "retained_source": 0,
             "failed": 0,
-            "coverage": 0.9189
+            "coverage": 1.0
           },
           "5": {
-            "required": 36,
-            "translated": 36,
+            "required": 14,
+            "translated": 14,
             "retained_source": 0,
             "failed": 0,
             "coverage": 1.0
@@ -3578,11 +3578,11 @@
             "coverage": 1.0
           },
           "18": {
-            "required": 30,
-            "translated": 26,
-            "retained_source": 4,
+            "required": 7,
+            "translated": 7,
+            "retained_source": 0,
             "failed": 0,
-            "coverage": 0.8667
+            "coverage": 1.0
           }
         },
         "blocks": [
@@ -4169,10 +4169,10 @@
           {
             "page": 0,
             "block_index": 20,
-            "kind": "footnote_or_small",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "furniture",
+            "required": false,
+            "status": "not_required",
+            "reason": "page header/footer, not body text",
             "source_rect": [
               53.45,
               588.45,
@@ -4191,17 +4191,17 @@
             "cjk_ratio": 0.8,
             "source_font_size": 8.05,
             "target_font_size": 7.97,
-            "font_ok": false,
-            "start_offset_ratio": 0.0045,
-            "notes": "target font 8.0pt vs source 8.0pt"
+            "font_ok": true,
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 0,
             "block_index": 21,
-            "kind": "footnote",
+            "kind": "furniture",
             "required": false,
             "status": "not_required",
-            "reason": "footnote / small print",
+            "reason": "page header/footer, not body text",
             "source_rect": [
               53.72,
               690.07,
@@ -4395,7 +4395,7 @@
             "source_font_size": 9.94,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.0274,
+            "start_offset_ratio": 0.0056,
             "notes": ""
           },
           {
@@ -4424,7 +4424,7 @@
             "source_font_size": 9.96,
             "target_font_size": 7.97,
             "font_ok": false,
-            "start_offset_ratio": 0.0245,
+            "start_offset_ratio": 0.0205,
             "notes": "target font 8.0pt vs source 10.0pt"
           },
           {
@@ -4540,7 +4540,7 @@
             "source_font_size": 10.02,
             "target_font_size": 9.46,
             "font_ok": true,
-            "start_offset_ratio": 0.0216,
+            "start_offset_ratio": 0.0244,
             "notes": ""
           },
           {
@@ -5642,8 +5642,8 @@
             "source_font_size": 9.96,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.1305,
-            "notes": "start offset 13.1% of page size"
+            "start_offset_ratio": 0.0055,
+            "notes": ""
           },
           {
             "page": 2,
@@ -5700,8 +5700,8 @@
             "source_font_size": 10.02,
             "target_font_size": 8.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0397,
-            "notes": "start offset 4.0% of page size"
+            "start_offset_ratio": 0.0231,
+            "notes": ""
           },
           {
             "page": 2,
@@ -5758,7 +5758,7 @@
             "source_font_size": 9.96,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.0273,
+            "start_offset_ratio": 0.0055,
             "notes": ""
           },
           {
@@ -5787,7 +5787,7 @@
             "source_font_size": 9.96,
             "target_font_size": 9.46,
             "font_ok": true,
-            "start_offset_ratio": 0.0244,
+            "start_offset_ratio": 0.0054,
             "notes": ""
           },
           {
@@ -5845,8 +5845,8 @@
             "source_font_size": 5.63,
             "target_font_size": 4.26,
             "font_ok": true,
-            "start_offset_ratio": 0.0364,
-            "notes": "start offset 3.6% of page size; source small print 5.6pt; absolute 8pt rule not applied"
+            "start_offset_ratio": 0.0005,
+            "notes": "source small print 5.6pt; absolute 8pt rule not applied"
           },
           {
             "page": 2,
@@ -5874,7 +5874,7 @@
             "source_font_size": 5.63,
             "target_font_size": 4.69,
             "font_ok": true,
-            "start_offset_ratio": 0.0156,
+            "start_offset_ratio": 0.0004,
             "notes": "source small print 5.6pt; absolute 8pt rule not applied"
           },
           {
@@ -5961,7 +5961,7 @@
             "source_font_size": 5.01,
             "target_font_size": 3.76,
             "font_ok": true,
-            "start_offset_ratio": 0.0099,
+            "start_offset_ratio": 0.0008,
             "notes": "source small print 5.0pt; absolute 8pt rule not applied"
           },
           {
@@ -6019,7 +6019,7 @@
             "source_font_size": 5.01,
             "target_font_size": 3.76,
             "font_ok": true,
-            "start_offset_ratio": 0.0215,
+            "start_offset_ratio": 0.0009,
             "notes": "source small print 5.0pt; absolute 8pt rule not applied"
           },
           {
@@ -6077,7 +6077,7 @@
             "source_font_size": 5.01,
             "target_font_size": 3.76,
             "font_ok": true,
-            "start_offset_ratio": 0.027,
+            "start_offset_ratio": 0.0007,
             "notes": "source small print 5.0pt; absolute 8pt rule not applied"
           },
           {
@@ -6106,8 +6106,8 @@
             "source_font_size": 5.01,
             "target_font_size": 5.01,
             "font_ok": true,
-            "start_offset_ratio": 0.0612,
-            "notes": "start offset 6.1% of page size; source small print 5.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": 0.0009,
+            "notes": "source small print 5.0pt; absolute 8pt rule not applied"
           },
           {
             "page": 2,
@@ -6338,8 +6338,8 @@
             "source_font_size": 4.69,
             "target_font_size": 4.69,
             "font_ok": true,
-            "start_offset_ratio": 0.0125,
-            "notes": "source small print 4.7pt; absolute 8pt rule not applied"
+            "start_offset_ratio": 0.043,
+            "notes": "start offset 4.3% of page size; source small print 4.7pt; absolute 8pt rule not applied"
           },
           {
             "page": 2,
@@ -6367,16 +6367,16 @@
             "source_font_size": 4.69,
             "target_font_size": 4.69,
             "font_ok": true,
-            "start_offset_ratio": 0.0827,
-            "notes": "start offset 8.3% of page size; source small print 4.7pt; absolute 8pt rule not applied"
+            "start_offset_ratio": 0.0005,
+            "notes": "source small print 4.7pt; absolute 8pt rule not applied"
           },
           {
             "page": 2,
             "block_index": 59,
-            "kind": "body",
-            "required": true,
-            "status": "retained_source",
-            "reason": "source-language text still present in the mapped area",
+            "kind": "figure_label",
+            "required": false,
+            "status": "not_required",
+            "reason": "text inside a figure (kept as part of the original artwork)",
             "source_rect": [
               320.98,
               240.5,
@@ -6402,10 +6402,10 @@
           {
             "page": 2,
             "block_index": 60,
-            "kind": "body",
-            "required": true,
-            "status": "retained_source",
-            "reason": "source-language text still present in the mapped area",
+            "kind": "figure_label",
+            "required": false,
+            "status": "not_required",
+            "reason": "text inside a figure (kept as part of the original artwork)",
             "source_rect": [
               396.85,
               231.59,
@@ -6431,10 +6431,10 @@
           {
             "page": 2,
             "block_index": 61,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "figure_label",
+            "required": false,
+            "status": "not_required",
+            "reason": "text inside a figure (kept as part of the original artwork)",
             "source_rect": [
               342.8,
               222.57,
@@ -6454,16 +6454,16 @@
             "source_font_size": 4.69,
             "target_font_size": 4.69,
             "font_ok": true,
-            "start_offset_ratio": 0.0005,
-            "notes": "source small print 4.7pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 2,
             "block_index": 62,
-            "kind": "body",
-            "required": true,
-            "status": "retained_source",
-            "reason": "source-language text still present in the mapped area",
+            "kind": "figure_label",
+            "required": false,
+            "status": "not_required",
+            "reason": "text inside a figure (kept as part of the original artwork)",
             "source_rect": [
               396.85,
               258.65,
@@ -6541,8 +6541,8 @@
             "source_font_size": 5.01,
             "target_font_size": 3.76,
             "font_ok": true,
-            "start_offset_ratio": 0.067,
-            "notes": "start offset 6.7% of page size; source small print 5.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": 0.0009,
+            "notes": "source small print 5.0pt; absolute 8pt rule not applied"
           },
           {
             "page": 2,
@@ -6599,7 +6599,7 @@
             "source_font_size": 5.01,
             "target_font_size": 3.76,
             "font_ok": true,
-            "start_offset_ratio": 0.0271,
+            "start_offset_ratio": 0.0007,
             "notes": "source small print 5.0pt; absolute 8pt rule not applied"
           },
           {
@@ -6657,7 +6657,7 @@
             "source_font_size": 5.01,
             "target_font_size": 5.01,
             "font_ok": true,
-            "start_offset_ratio": 0.0085,
+            "start_offset_ratio": 0.0,
             "notes": "source small print 5.0pt; absolute 8pt rule not applied"
           },
           {
@@ -6802,8 +6802,8 @@
             "source_font_size": 5.32,
             "target_font_size": 3.99,
             "font_ok": true,
-            "start_offset_ratio": 0.0166,
-            "notes": "source small print 5.3pt; absolute 8pt rule not applied"
+            "start_offset_ratio": 0.046,
+            "notes": "start offset 4.6% of page size; source small print 5.3pt; absolute 8pt rule not applied"
           },
           {
             "page": 2,
@@ -6953,10 +6953,10 @@
           {
             "page": 4,
             "block_index": 2,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               75.96,
               103.23,
@@ -6976,16 +6976,16 @@
             "source_font_size": 7.97,
             "target_font_size": 5.98,
             "font_ok": true,
-            "start_offset_ratio": 0.0044,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 3,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               79.59,
               116.91,
@@ -7005,16 +7005,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0221,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 4,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               164.11,
               126.47,
@@ -7034,16 +7034,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.57,
             "font_ok": true,
-            "start_offset_ratio": 0.0166,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 5,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               255.99,
               116.91,
@@ -7063,16 +7063,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.57,
             "font_ok": true,
-            "start_offset_ratio": 0.0044,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 6,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               257.59,
               126.47,
@@ -7092,16 +7092,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.57,
             "font_ok": true,
-            "start_offset_ratio": 0.0166,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 7,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               351.58,
               116.91,
@@ -7121,16 +7121,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0047,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 8,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               456.11,
               116.8,
@@ -7150,16 +7150,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0392,
-            "notes": "start offset 3.9% of page size; source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 9,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               57.99,
               140.04,
@@ -7179,16 +7179,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0216,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 10,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               159.17,
               140.04,
@@ -7208,16 +7208,16 @@
             "source_font_size": 7.97,
             "target_font_size": 6.38,
             "font_ok": true,
-            "start_offset_ratio": 0.0191,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 11,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               159.89,
               149.61,
@@ -7237,16 +7237,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0166,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 12,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               238.5,
               140.04,
@@ -7266,16 +7266,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0303,
-            "notes": "start offset 3.0% of page size; source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 13,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               339.51,
               140.04,
@@ -7295,16 +7295,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0266,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 14,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               340.85,
               149.61,
@@ -7324,16 +7324,16 @@
             "source_font_size": 7.97,
             "target_font_size": 6.38,
             "font_ok": true,
-            "start_offset_ratio": 0.0164,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 15,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               473.22,
               139.94,
@@ -7353,16 +7353,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0292,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 16,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               80.68,
               163.18,
@@ -7382,16 +7382,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0348,
-            "notes": "start offset 3.5% of page size; source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 17,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               145.49,
               163.18,
@@ -7411,16 +7411,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0145,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 18,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               249.73,
               163.18,
@@ -7440,16 +7440,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0246,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 19,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               332.46,
               163.18,
@@ -7469,16 +7469,16 @@
             "source_font_size": 7.97,
             "target_font_size": 6.78,
             "font_ok": true,
-            "start_offset_ratio": 0.0229,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 20,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               473.92,
               163.07,
@@ -7498,16 +7498,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0201,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 21,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               81.28,
               186.42,
@@ -7527,16 +7527,16 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0188,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
             "block_index": 22,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               85.67,
               195.99,
@@ -7556,8 +7556,8 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0141,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
@@ -7585,7 +7585,7 @@
             "source_font_size": 3.52,
             "target_font_size": 3.52,
             "font_ok": true,
-            "start_offset_ratio": 0.0153,
+            "start_offset_ratio": 0.0235,
             "notes": "source small print 3.5pt; absolute 8pt rule not applied"
           },
           {
@@ -7614,7 +7614,7 @@
             "source_font_size": 3.52,
             "target_font_size": 3.52,
             "font_ok": true,
-            "start_offset_ratio": 0.0226,
+            "start_offset_ratio": 0.0003,
             "notes": "source small print 3.5pt; absolute 8pt rule not applied"
           },
           {
@@ -7643,7 +7643,7 @@
             "source_font_size": 3.52,
             "target_font_size": 3.52,
             "font_ok": true,
-            "start_offset_ratio": 0.0071,
+            "start_offset_ratio": 0.0004,
             "notes": "source small print 3.5pt; absolute 8pt rule not applied"
           },
           {
@@ -7672,16 +7672,16 @@
             "source_font_size": 3.52,
             "target_font_size": 3.52,
             "font_ok": true,
-            "start_offset_ratio": 0.0238,
+            "start_offset_ratio": 0.0004,
             "notes": "source small print 3.5pt; absolute 8pt rule not applied"
           },
           {
             "page": 4,
             "block_index": 27,
-            "kind": "formula_label",
+            "kind": "table_cell",
             "required": false,
             "status": "not_required",
-            "reason": "equation number / numeric label",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               168.93,
               201.62,
@@ -7707,10 +7707,10 @@
           {
             "page": 4,
             "block_index": 28,
-            "kind": "formula_label",
+            "kind": "table_cell",
             "required": false,
             "status": "not_required",
-            "reason": "equation number / numeric label",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               268.27,
               186.8,
@@ -7794,10 +7794,10 @@
           {
             "page": 4,
             "block_index": 31,
-            "kind": "formula_label",
+            "kind": "table_cell",
             "required": false,
             "status": "not_required",
-            "reason": "equation number / numeric label",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               281.31,
               201.7,
@@ -7823,10 +7823,10 @@
           {
             "page": 4,
             "block_index": 32,
-            "kind": "formula_label",
+            "kind": "table_cell",
             "required": false,
             "status": "not_required",
-            "reason": "equation number / numeric label",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               296.22,
               194.25,
@@ -7852,10 +7852,10 @@
           {
             "page": 4,
             "block_index": 33,
-            "kind": "formula_label",
+            "kind": "table_cell",
             "required": false,
             "status": "not_required",
-            "reason": "equation number / numeric label",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               296.22,
               201.7,
@@ -7881,10 +7881,10 @@
           {
             "page": 4,
             "block_index": 34,
-            "kind": "formula_label",
+            "kind": "table_cell",
             "required": false,
             "status": "not_required",
-            "reason": "equation number / numeric label",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               375.12,
               193.08,
@@ -7939,10 +7939,10 @@
           {
             "page": 4,
             "block_index": 36,
-            "kind": "formula_label",
+            "kind": "table_cell",
             "required": false,
             "status": "not_required",
-            "reason": "equation number / numeric label",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               405.21,
               193.08,
@@ -7997,10 +7997,10 @@
           {
             "page": 4,
             "block_index": 38,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               471.37,
               195.7,
@@ -8020,8 +8020,8 @@
             "source_font_size": 7.97,
             "target_font_size": 7.97,
             "font_ok": true,
-            "start_offset_ratio": 0.0078,
-            "notes": "source small print 8.0pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 4,
@@ -8194,7 +8194,7 @@
             "source_font_size": 10.05,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.0247,
+            "start_offset_ratio": 0.0263,
             "notes": ""
           },
           {
@@ -8223,7 +8223,7 @@
             "source_font_size": 10.02,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.0168,
+            "start_offset_ratio": 0.0024,
             "notes": ""
           },
           {
@@ -8281,7 +8281,7 @@
             "source_font_size": 9.86,
             "target_font_size": 9.46,
             "font_ok": true,
-            "start_offset_ratio": 0.0274,
+            "start_offset_ratio": 0.0056,
             "notes": ""
           },
           {
@@ -9586,7 +9586,7 @@
             "source_font_size": 9.96,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.0245,
+            "start_offset_ratio": 0.0057,
             "notes": ""
           },
           {
@@ -10427,7 +10427,7 @@
             "source_font_size": 9.96,
             "target_font_size": 9.46,
             "font_ok": true,
-            "start_offset_ratio": 0.0238,
+            "start_offset_ratio": 0.0059,
             "notes": ""
           },
           {
@@ -10485,7 +10485,7 @@
             "source_font_size": 10.06,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.0245,
+            "start_offset_ratio": 0.0056,
             "notes": ""
           },
           {
@@ -10549,10 +10549,10 @@
           {
             "page": 17,
             "block_index": 2,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               57.22,
               99.12,
@@ -10572,16 +10572,16 @@
             "source_font_size": 6.43,
             "target_font_size": 6.43,
             "font_ok": true,
-            "start_offset_ratio": 0.0036,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 3,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               65.38,
               110.07,
@@ -10601,16 +10601,16 @@
             "source_font_size": 6.43,
             "target_font_size": 6.43,
             "font_ok": true,
-            "start_offset_ratio": 0.0203,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 4,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               68.6,
               136.35,
@@ -10630,16 +10630,16 @@
             "source_font_size": 6.43,
             "target_font_size": 4.18,
             "font_ok": true,
-            "start_offset_ratio": 0.0633,
-            "notes": "start offset 6.3% of page size; source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 5,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               129.99,
               144.07,
@@ -10659,16 +10659,16 @@
             "source_font_size": 6.43,
             "target_font_size": 6.43,
             "font_ok": true,
-            "start_offset_ratio": 0.0196,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 6,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               251.86,
               136.35,
@@ -10688,16 +10688,16 @@
             "source_font_size": 6.43,
             "target_font_size": 5.79,
             "font_ok": true,
-            "start_offset_ratio": 0.0037,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 7,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               371.74,
               128.74,
@@ -10717,16 +10717,16 @@
             "source_font_size": 6.43,
             "target_font_size": 6.43,
             "font_ok": true,
-            "start_offset_ratio": 0.0161,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 8,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               57.34,
               162.85,
@@ -10746,16 +10746,16 @@
             "source_font_size": 6.43,
             "target_font_size": 4.18,
             "font_ok": true,
-            "start_offset_ratio": 0.0698,
-            "notes": "start offset 7.0% of page size; source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 9,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               126.68,
               170.57,
@@ -10775,16 +10775,16 @@
             "source_font_size": 6.43,
             "target_font_size": 6.43,
             "font_ok": true,
-            "start_offset_ratio": 0.0223,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 10,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               238.12,
               166.71,
@@ -10804,16 +10804,16 @@
             "source_font_size": 6.43,
             "target_font_size": 5.79,
             "font_ok": true,
-            "start_offset_ratio": 0.018,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 11,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               371.74,
               166.82,
@@ -10833,16 +10833,16 @@
             "source_font_size": 6.43,
             "target_font_size": 6.43,
             "font_ok": true,
-            "start_offset_ratio": 0.0036,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 12,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               65.38,
               189.24,
@@ -10862,16 +10862,16 @@
             "source_font_size": 6.43,
             "target_font_size": 5.47,
             "font_ok": true,
-            "start_offset_ratio": 0.0799,
-            "notes": "start offset 8.0% of page size; source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 13,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               253.65,
               196.96,
@@ -10891,16 +10891,16 @@
             "source_font_size": 6.43,
             "target_font_size": 5.47,
             "font_ok": true,
-            "start_offset_ratio": 0.0135,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 14,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               371.74,
               189.35,
@@ -10920,16 +10920,16 @@
             "source_font_size": 6.5,
             "target_font_size": 6.43,
             "font_ok": true,
-            "start_offset_ratio": 0.0036,
-            "notes": "source small print 6.5pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 15,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               68.6,
               208.02,
@@ -10949,16 +10949,16 @@
             "source_font_size": 6.43,
             "target_font_size": 4.18,
             "font_ok": true,
-            "start_offset_ratio": 0.0115,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 16,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               136.6,
               215.74,
@@ -10978,16 +10978,16 @@
             "source_font_size": 6.43,
             "target_font_size": 6.43,
             "font_ok": true,
-            "start_offset_ratio": 0.0144,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 17,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               266.28,
               208.02,
@@ -11007,16 +11007,16 @@
             "source_font_size": 6.43,
             "target_font_size": 6.43,
             "font_ok": true,
-            "start_offset_ratio": 0.0235,
-            "notes": "source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
             "block_index": 18,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "table_cell",
+            "required": false,
+            "status": "not_required",
+            "reason": "table cell: structure preserved, not body prose",
             "source_rect": [
               65.38,
               226.69,
@@ -11036,8 +11036,8 @@
             "source_font_size": 6.43,
             "target_font_size": 5.79,
             "font_ok": true,
-            "start_offset_ratio": 0.2545,
-            "notes": "start offset 25.4% of page size; source small print 6.4pt; absolute 8pt rule not applied"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
@@ -11094,7 +11094,7 @@
             "source_font_size": 9.96,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.0274,
+            "start_offset_ratio": 0.0056,
             "notes": ""
           },
           {
@@ -11187,10 +11187,10 @@
           {
             "page": 17,
             "block_index": 24,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "algorithm_line",
+            "required": false,
+            "status": "not_required",
+            "reason": "algorithm listing: kept as formal structure",
             "source_rect": [
               324.32,
               277.18,
@@ -11210,16 +11210,16 @@
             "source_font_size": 10.06,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.0266,
+            "start_offset_ratio": null,
             "notes": ""
           },
           {
             "page": 17,
             "block_index": 25,
-            "kind": "body",
-            "required": true,
-            "status": "retained_source",
-            "reason": "source-language text still present in the mapped area",
+            "kind": "algorithm_line",
+            "required": false,
+            "status": "not_required",
+            "reason": "algorithm listing: kept as formal structure",
             "source_rect": [
               324.32,
               313.04,
@@ -11245,10 +11245,10 @@
           {
             "page": 17,
             "block_index": 26,
-            "kind": "formula",
+            "kind": "algorithm_line",
             "required": false,
             "status": "not_required",
-            "reason": "standalone formula: preserved as object",
+            "reason": "algorithm listing: kept as formal structure",
             "source_rect": [
               324.32,
               384.84,
@@ -11274,10 +11274,10 @@
           {
             "page": 17,
             "block_index": 27,
-            "kind": "body",
-            "required": true,
-            "status": "retained_source",
-            "reason": "source-language text still present in the mapped area",
+            "kind": "algorithm_line",
+            "required": false,
+            "status": "not_required",
+            "reason": "algorithm listing: kept as formal structure",
             "source_rect": [
               320.62,
               408.55,
@@ -11303,10 +11303,10 @@
           {
             "page": 17,
             "block_index": 28,
-            "kind": "body",
-            "required": true,
-            "status": "retained_source",
-            "reason": "source-language text still present in the mapped area",
+            "kind": "algorithm_line",
+            "required": false,
+            "status": "not_required",
+            "reason": "algorithm listing: kept as formal structure",
             "source_rect": [
               464.13,
               409.22,
@@ -11332,10 +11332,10 @@
           {
             "page": 17,
             "block_index": 29,
-            "kind": "formula",
+            "kind": "algorithm_line",
             "required": false,
             "status": "not_required",
-            "reason": "standalone formula: preserved as object",
+            "reason": "algorithm listing: kept as formal structure",
             "source_rect": [
               320.62,
               422.42,
@@ -11361,10 +11361,10 @@
           {
             "page": 17,
             "block_index": 30,
-            "kind": "body",
-            "required": true,
-            "status": "retained_source",
-            "reason": "source-language text still present in the mapped area",
+            "kind": "algorithm_line",
+            "required": false,
+            "status": "not_required",
+            "reason": "algorithm listing: kept as formal structure",
             "source_rect": [
               320.62,
               428.49,
@@ -11390,10 +11390,10 @@
           {
             "page": 17,
             "block_index": 31,
-            "kind": "body",
-            "required": true,
-            "status": "translated",
-            "reason": "",
+            "kind": "algorithm_line",
+            "required": false,
+            "status": "not_required",
+            "reason": "algorithm listing: kept as formal structure",
             "source_rect": [
               320.62,
               460.19,
@@ -11413,8 +11413,8 @@
             "source_font_size": 9.96,
             "target_font_size": 9.96,
             "font_ok": true,
-            "start_offset_ratio": 0.0798,
-            "notes": "start offset 8.0% of page size"
+            "start_offset_ratio": null,
+            "notes": ""
           },
           {
             "page": 17,
@@ -11661,7 +11661,7 @@
         "error": null
       },
       "engine_status": "failed",
-      "elapsed_s": 6.3,
+      "elapsed_s": 6.6,
       "log": "artifacts/validation/m0-20261031T1005/outputs/edge-cases/scanned-page/babeldoc.log",
       "status": "unsupported",
       "reason": "scanned page skipped by engine",

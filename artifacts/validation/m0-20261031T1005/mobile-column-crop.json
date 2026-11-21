@@ -1,0 +1,133 @@
+{
+  "phones_dp": {
+    "compact_360": 360,
+    "pixel_412": 412
+  },
+  "documents": {
+    "attn_zh": {
+      "file": "artifacts/validation/m0-20261031T1005/outputs/arxiv-1706.03762/attn.no_watermark.zh-CN.mono.pdf",
+      "pages": [
+        {
+          "page": 2,
+          "split": null
+        },
+        {
+          "page": 3,
+          "split": null
+        },
+        {
+          "page": 4,
+          "split": null
+        },
+        {
+          "page": 5,
+          "split": null
+        }
+      ],
+      "layout": "single_column",
+      "text_box_width_pt": 398.9,
+      "scale_fit_textbox": {
+        "compact_360": 0.87,
+        "pixel_412": 1.0
+      },
+      "effective_body_px": {
+        "compact_360": 8.7,
+        "pixel_412": 10.0
+      },
+      "body_font_pt": 9.96
+    },
+    "hybridflow_zh": {
+      "file": "artifacts/validation/m0-20261031T1005/outputs/arxiv-2409.19256/hybridflow.no_watermark.zh-CN.mono.pdf",
+      "pages": [
+        {
+          "page": 2,
+          "split": {
+            "left": [
+              53.7,
+              45.9,
+              293.6,
+              711.3
+            ],
+            "right": [
+              304.6,
+              46.1,
+              558.4,
+              719.7
+            ],
+            "body_font_pt": 9.96,
+            "body_spans": 92
+          }
+        },
+        {
+          "page": 3,
+          "split": {
+            "left": [
+              53.7,
+              45.9,
+              297.9,
+              713.0
+            ],
+            "right": [
+              318.0,
+              45.9,
+              567.1,
+              713.6
+            ],
+            "body_font_pt": 9.46,
+            "body_spans": 68
+          }
+        },
+        {
+          "page": 4,
+          "split": {
+            "left": [
+              53.5,
+              45.9,
+              297.5,
+              709.3
+            ],
+            "right": [
+              304.6,
+              46.1,
+              566.2,
+              708.7
+            ],
+            "body_font_pt": 9.96,
+            "body_spans": 80
+          }
+        },
+        {
+          "page": 5,
+          "split": {
+            "left": [
+              53.7,
+              45.9,
+              310.3,
+              719.8
+            ],
+            "right": [
+              316.7,
+              45.9,
+              566.3,
+              705.8
+            ],
+            "body_font_pt": 9.96,
+            "body_spans": 63
+          }
+        }
+      ],
+      "layout": "two_column",
+      "column_detected_on_pages": "4/4",
+      "mean_column_width_pt": 249.8,
+      "scale_fit_column": {
+        "compact_360": 1.39,
+        "pixel_412": 1.6
+      },
+      "effective_body_px": {
+        "compact_360": 13.9,
+        "pixel_412": 15.9
+      },
+      "body_font_pt": 9.96
+    }
+  }
+}

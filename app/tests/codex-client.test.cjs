@@ -43,7 +43,7 @@ test('service persists settings/history, never saves cancelled output, isolates 
  const svc=createAiService(options);await svc.load();const logged=once(client,'account');await svc.login();await logged;
  await svc.configure({provider:'codex',model:'fixture-model'});
  const r=await svc.run({paper_id:'p',version_id:'v',question:'hello',kind:'ask',request_id:'one'});
- assert.equal(r.answer,'中文回答 [1]');assert.equal(rows.length,1);assert.deepEqual(calls,['ai_prepare','ai_history','ai_save']);assert.equal(urls.length,1);
+ assert.equal(r.answer,'中文回答 [1]');assert.equal(rows.length,1);assert.deepEqual(calls.filter(m=>m!=='set_chat_model'),['ai_prepare','ai_history','ai_save']);assert.ok(calls.filter(m=>m==='set_chat_model').length>=2,'load/configure mirror chat_model into the library');assert.equal(urls.length,1);
  const again=createAiService(options);await again.load();assert.equal((await again.status()).provider,'codex');
  const run=svc.run({paper_id:'p',question:'WAIT',kind:'ask',request_id:'two'});const rejected=assert.rejects(run,/停止/);
  while(!client.active?.turnId)await new Promise(r=>setTimeout(r,5));await svc.cancel({request_id:'two'});await rejected;assert.equal(rows.length,1);
@@ -51,12 +51,47 @@ test('service persists settings/history, never saves cancelled output, isolates 
 });
 test('API selection preserves existing translation response shape',async t=>{const {dir,client}=fixture(t);const svc=createAiService({directory:dir,client,call:async()=>({text:'译文'}),openExternal:()=>{},emit:()=>{}});assert.deepEqual(await svc.run({kind:'translate',question:'a'}),{answer:'译文',sources:[]});});
 
+test('API provider can use a separate chat model and persists it without changing translation',async t=>{
+ const {dir,client}=fixture(t);const calls=[];
+ const call=async(method,p)=>{calls.push([method,p]);return {answer:'a',sources:[]};};
+ const svc=createAiService({directory:dir,client,emit:()=>{},openExternal:()=>{},call});
+ await svc.load();
+ await svc.configure({provider:'api',model:'',chat_model:'reasoner'});
+ assert.equal(svc.preferences().chat_model,'reasoner');
+ await svc.run({paper_id:'p',question:'q',kind:'ask',request_id:'r-1'});
+ assert.equal(calls.at(-1)[0],'explain');
+ assert.equal(calls.at(-1)[1].model,'reasoner');
+ const again=createAiService({directory:dir,client,emit:()=>{},openExternal:()=>{},call});
+ await again.load();
+ assert.equal(again.preferences().chat_model,'reasoner');
+ await again.configure({provider:'api',model:'',chat_model:''});
+ await again.run({paper_id:'p',question:'q',kind:'ask',request_id:'r-2'});
+ assert.equal(calls.at(-1)[1].model,undefined,'empty override keeps the translation model');
+});
+
+test('context preview honours the history switch for the API provider too',async t=>{
+ const {dir,client}=fixture(t);let historyReads=0;
+ const svc=createAiService({directory:dir,client,emit:()=>{},openExternal:()=>{},call:async(method)=>{
+   if(method==='ai_prepare')return {prompt:'local evidence',sources:[{version_id:'v'}],context_info:{version_id:'v'}};
+   if(method==='ai_history'){historyReads++;return [{question:'current',answer:'current answer',kind:'ask',sources:[{version_id:'v'}]}];}
+   throw new Error(method);
+ }});
+ await svc.configure({provider:'api',model:''});
+ const on=await svc.preview({paper_id:'p',kind:'ask'});
+ assert.equal(on.history_count,1,'API mode sends the same six exchanges as Codex');
+ assert.match(on.history,/current/);
+ const off=await svc.preview({paper_id:'p',kind:'ask',include_history:false});
+ assert.equal(off.history_count,0);
+ assert.equal(historyReads,1,'disabled history must not even read ai_history');
+});
+
 test('unreadable settings block inference until explicitly repaired, preferences do not start Codex',async t=>{
  const {dir,client}=fixture(t);fs.writeFileSync(path.join(dir,'ai-settings.json'),'{bad');
  let calls=0;const svc=createAiService({directory:dir,client,call:async()=>{calls++;return {};},openExternal:()=>{},emit:()=>{}});
  await svc.load();assert.equal(svc.preferences().provider,'api');assert.equal(client.child,null);
- await assert.rejects(svc.run({kind:'ask'}),/设置无法读取/);assert.equal(calls,0);
- await svc.configure({provider:'api',model:''});await svc.run({kind:'ask'});assert.equal(calls,1);
+ assert.equal(calls,0,'an unreadable settings file must not clobber the library chat_model');
+ await assert.rejects(svc.run({kind:'ask'}),/设置无法读取/);assert.equal(calls,0,'a blocked turn must not reach the sidecar');
+ await svc.configure({provider:'api',model:''});await svc.run({kind:'ask'});assert.equal(calls,2,'configure mirrors chat_model, then the turn calls explain');
 });
 
 test('context preview includes only current-version history and supports explicitly disabling history without model calls',async t=>{
@@ -69,4 +104,55 @@ test('context preview includes only current-version history and supports explici
  await svc.configure({provider:'codex',model:''});
  const preview=await svc.preview({paper_id:'p',kind:'ask'});assert.equal(preview.history_count,1);assert.match(preview.history,/current/);assert.doesNotMatch(preview.history,/other/);assert.equal(client.child,null);
  const disabled=await svc.preview({paper_id:'p',kind:'ask',include_history:false});assert.equal(disabled.history_count,0);assert.equal(historyReads,1);assert.equal(client.child,null);
+});
+
+test('load and configure mirror chat_model into the sidecar so quick explain/digest/LAN share it',async t=>{
+ const {dir,client}=fixture(t);const calls=[];
+ const call=async(method,p)=>{calls.push([method,p]);return {};};
+ const svc=createAiService({directory:dir,client,call,openExternal:()=>{},emit:()=>{}});
+ const mirrors=()=>calls.filter(([method])=>method==='set_chat_model');
+ await svc.load();
+ assert.deepEqual(mirrors().at(-1),[ 'set_chat_model',{model:''} ],'load mirrors the on-disk (default) setting');
+ await svc.configure({provider:'api',model:'',chat_model:'reasoner'});
+ assert.deepEqual(mirrors().at(-1)[1],{model:'reasoner'},'saving the chat model persists it in the library');
+ await svc.configure({provider:'api',model:''});
+ assert.deepEqual(mirrors().at(-1)[1],{model:'reasoner'},'omitting chat_model keeps the saved one');
+ const persisted=createAiService({directory:dir,client,call,openExternal:()=>{},emit:()=>{}});
+ await persisted.load();
+ assert.deepEqual(calls.filter(([method])=>method==='set_chat_model').at(-1)[1],{model:'reasoner'},'a restart re-syncs the saved model');
+});
+
+test('settings still save and load when the sidecar does not know set_chat_model',async t=>{
+ const {dir,client}=fixture(t);
+ const stale=async()=>{throw new Error('unknown method set_chat_model');};
+ const svc=createAiService({directory:dir,client,call:stale,openExternal:()=>{},emit:()=>{}});
+ await svc.load();
+ assert.deepEqual(await svc.configure({provider:'api',model:'m',chat_model:'c'}),{provider:'api',model:'m',chat_model:'c'});
+ const again=createAiService({directory:dir,client,call:stale,openExternal:()=>{},emit:()=>{}});
+ await again.load();
+ assert.equal(again.preferences().chat_model,'c','an old sidecar must not break loading either');
+});
+
+test('codex quick bubble (ephemeral) answers without writing chat history',async t=>{
+ const {dir,client}=fixture(t),saves=[];
+ const call=async(method,p)=>{if(method==='ai_prepare')return {prompt:p.question,sources:[{version_id:'v'}]};if(method==='ai_history')return [];if(method==='ai_save'){saves.push(p);return {};}if(method==='set_chat_model')return {ok:true};throw new Error(method);};
+ const svc=createAiService({directory:dir,client,call,openExternal:()=>{},emit:()=>{}});
+ await svc.load();const logged=once(client,'account');await svc.login();await logged;
+ await svc.configure({provider:'codex',model:'fixture-model'});
+ const r=await svc.run({paper_id:'p',version_id:'v',question:'hello',kind:'ask',request_id:'e-1',ephemeral:true});
+ assert.equal(r.answer,'中文回答 [1]');
+ assert.equal(saves.length,0,'ephemeral codex turns must skip ai_save');
+ assert.ok(Array.isArray(r.warnings));
+ await svc.run({paper_id:'p',version_id:'v',question:'again',kind:'ask',request_id:'e-2'});
+ assert.equal(saves.length,1,'a normal codex turn still writes history');
+});
+
+test('codex provider rejects image crops with an actionable Chinese error',async t=>{
+ const {dir,client}=fixture(t);let called=0;
+ const svc=createAiService({directory:dir,client,call:async()=>{called++;return {};},openExternal:()=>{},emit:()=>{}});
+ await svc.load();
+ await svc.configure({provider:'codex',model:'fixture-model'});
+ await assert.rejects(svc.run({paper_id:'p',question:'看看这张图',kind:'ask',request_id:'img-1',image_data_url:'data:image/png;base64,AAAA'}),/API 服务/);
+ assert.equal(client.child,null,'rejecting an image must not spawn the Codex CLI');
+ assert.equal(called,2,'only the two settings mirrors reach the sidecar');
 });

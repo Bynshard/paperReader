@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronRight, FileText, Images, ListTree, Loader2, X } from "lucide-react";
-import type { OutlineItem, PaneApi } from "./PdfPane";
+import { ChevronDown, ChevronRight, FileText, Images, LayoutGrid, ListTree, Loader2, X } from "lucide-react";
+import type { FigureItem, OutlineItem, PaneApi } from "./PdfPane";
+import "./reader-gallery.css";
 
 type Props = {
   pane: RefObject<PaneApi | null>;
@@ -9,12 +10,14 @@ type Props = {
   current: number;
   versionKey?: string;
   onJump: (page: number, fraction: number) => void;
+  /** Turns a figure card into the reader's pinned corner portal (FEAT-UX-06). */
+  onPin?: (page: number, fraction: number, src: string) => void;
   onClose: () => void;
 };
 
-/** Left-hand reader navigation: PDF outline (bookmarks) and page thumbnails. */
-export default function ReaderNav({ pane, pages, current, versionKey, onJump, onClose }: Props) {
-  const [tab, setTab] = useState<"outline" | "pages">("outline");
+/** Left-hand reader navigation: PDF outline, page thumbnails and a figures gallery. */
+export default function ReaderNav({ pane, pages, current, versionKey, onJump, onPin, onClose }: Props) {
+  const [tab, setTab] = useState<"outline" | "pages" | "figures">("outline");
   const [outline, setOutline] = useState<OutlineItem[] | null>(null);
   const [error, setError] = useState("");
 
@@ -37,6 +40,7 @@ export default function ReaderNav({ pane, pages, current, versionKey, onJump, on
       <div className="reader-nav-tabs">
         <button className={tab === "outline" ? "on" : ""} onClick={() => setTab("outline")}><ListTree size={14} />目录</button>
         <button className={tab === "pages" ? "on" : ""} onClick={() => setTab("pages")}><Images size={14} />页面</button>
+        <button className={tab === "figures" ? "on" : ""} onClick={() => setTab("figures")} title="全文图表画廊"><LayoutGrid size={14} />图表</button>
         <button className="icon-btn reader-nav-close" aria-label="收起阅读导航" onClick={onClose}><X size={14} /></button>
       </div>
       {tab === "outline" && (
@@ -47,6 +51,7 @@ export default function ReaderNav({ pane, pages, current, versionKey, onJump, on
         </div>
       )}
       {tab === "pages" && <PageStrip pane={pane} pages={pages} current={current} onJump={onJump} />}
+      {tab === "figures" && <FigureGallery pane={pane} versionKey={versionKey} onJump={onJump} onPin={onPin} />}
     </aside>
   );
 }
@@ -100,4 +105,82 @@ function Thumbnail({ pane, page, active, onClick }: { pane: RefObject<PaneApi | 
     {src ? <img src={src} alt={`第 ${page} 页缩略图`} loading="lazy" /> : <span className="thumb-placeholder">{failed ? <FileText size={18} /> : <Loader2 className="spin" size={16} />}</span>}
     <span className="thumb-page">{page}</span>
   </button>;
+}
+
+/** Full-text figures & tables gallery (FEAT-UX-06). */
+function FigureGallery({ pane, versionKey, onJump, onPin }: {
+  pane: RefObject<PaneApi | null>;
+  versionKey?: string;
+  onJump: (page: number, fraction: number) => void;
+  onPin?: (page: number, fraction: number, src: string) => void;
+}) {
+  const [figures, setFigures] = useState<FigureItem[] | null>(null);
+  const [error, setError] = useState("");
+  // Render a few cards at a time so a 200-caption scan never blocks the UI.
+  const [visible, setVisible] = useState(24);
+
+  useEffect(() => {
+    let alive = true;
+    let tries = 0;
+    const load = () => {
+      const api = pane.current;
+      if (!api) { if (++tries < 40) setTimeout(load, 150); return; }
+      if (typeof api.extractFigures !== "function") { if (alive) setFigures([]); return; }
+      api.extractFigures().then((rows) => { if (alive) setFigures(rows); }).catch((e) => { if (alive) { setFigures([]); setError((e as Error).message); } });
+    };
+    setFigures(null);
+    setError("");
+    setVisible(24);
+    load();
+    return () => { alive = false; };
+  }, [pane, versionKey]);
+
+  if (figures === null) return <p className="reader-nav-empty"><Loader2 className="spin" size={14} /> 正在扫描全文图表…</p>;
+  if (figures.length === 0) return <p className="reader-nav-empty">{error ? `图表提取失败：${error}` : "这份 PDF 没有识别到 Figure / Table / Algorithm 图注。"}</p>;
+  return <div className="figure-gallery" aria-label="图表画廊">
+    <p className="figure-gallery-count">全文共 {figures.length} 个图表 / 算法</p>
+    {figures.slice(0, visible).map((figure) => <FigureCard key={`${figure.page}:${figure.label}`} pane={pane} figure={figure} onJump={onJump} onPin={onPin} />)}
+    {figures.length > visible && <button className="btn tiny figure-more" onClick={() => setVisible((value) => value + 24)}>加载更多（{figures.length - visible}）</button>}
+  </div>;
+}
+
+function FigureCard({ pane, figure, onJump, onPin }: {
+  pane: RefObject<PaneApi | null>;
+  figure: FigureItem;
+  onJump: (page: number, fraction: number) => void;
+  onPin?: (page: number, fraction: number, src: string) => void;
+}) {
+  const [src, setSrc] = useState("");
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    let tries = 0;
+    const load = () => {
+      const api = pane.current;
+      if (!api) { if (++tries < 30) setTimeout(load, 150); return; }
+      api.renderRegion(figure.page, figure.fraction, 240).then((url) => { if (alive) { if (url) setSrc(url); else setFailed(true); } }).catch(() => { if (alive) setFailed(true); });
+    };
+    load();
+    return () => { alive = false; };
+  }, [pane, figure.page, figure.fraction]);
+  const caption = figure.caption.replace(/^(?:Figure|Fig\.|Table|Algorithm)\s+\d+[.:：]\s*/i, "").trim();
+  const pin = async () => {
+    if (!onPin) return;
+    let url = src;
+    if (!url) { try { url = (await pane.current?.renderRegion(figure.page, figure.fraction, 240)) || ""; } catch { url = ""; } }
+    onPin(figure.page, figure.fraction, url);
+  };
+  return <div className="figure-card">
+    <button className="figure-open" onClick={() => onJump(figure.page, figure.fraction)} aria-label={`跳转到 ${figure.label}（第 ${figure.page} 页）`}>
+      <span className="figure-thumb">
+        {src ? <img src={src} alt={`${figure.label} 预览`} loading="lazy" /> : <span className="figure-thumb-empty">{failed ? <FileText size={18} /> : <Loader2 className="spin" size={16} />}</span>}
+      </span>
+      <span className="figure-meta">
+        <strong>{figure.label}</strong>
+        <span className="figure-caption" title={figure.caption}>{caption || figure.caption}</span>
+        <span className="figure-page">第 {figure.page} 页</span>
+      </span>
+    </button>
+    {onPin && <button className="figure-pin" aria-label={`钉选 ${figure.label}`} title="钉选到角落对照" onClick={() => void pin()}>📌</button>}
+  </div>;
 }

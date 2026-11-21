@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
+import {signWindowsApp} from './sign-windows.mjs';
 const root=path.resolve(import.meta.dirname,'../..');
 const target=process.argv[2]||process.platform;
 if(!['linux','win32'].includes(target))throw new Error('支持 Linux x64 和 Windows x64 打包');
@@ -40,8 +41,11 @@ try{
  }else await fs.copyFile(path.join(root,'tools/rclone/rclone'),path.join(bin,'rclone'));
  await fs.chmod(path.join(bin,coreFile),0o755);if(!windows)await fs.chmod(path.join(bin,'rclone'),0o755);
  const electronVersion=JSON.parse(await fs.readFile(path.join(root,'app/node_modules/electron/package.json'),'utf8')).version;
- const results=await packager({dir:stage,name:'Moonlight',executableName:'moonlight',appBundleId:'io.moonlight.desktop',platform:target,arch:'x64',electronVersion,electronZipDir:process.env.MOONLIGHT_ELECTRON_ZIP_DIR,asar:true,prune:false,out:output,overwrite:true,extraResource:[bin],ignore:[/^[/\\]bin($|[/\\])/]});
+ const results=await packager({dir:stage,name:'Moonlight',executableName:'moonlight',appBundleId:'io.moonlight.desktop',platform:target,arch:'x64',electronVersion,electronZipDir:process.env.MOONLIGHT_ELECTRON_ZIP_DIR,asar:{unpackDir:'dist'},prune:false,out:output,overwrite:true,extraResource:[bin],ignore:[/^[/\\]bin($|[/\\])/]});
  const dir=results[0];
+ // Sign the real executables before zipping/MSI so both installers carry a
+ // valid Authenticode signature when CI provides a certificate secret.
+ await signWindowsApp(dir);
  await fs.copyFile(path.join(root,windows?'docs/WINDOWS_TESTING.md':'docs/RELEASE.md'),path.join(dir,'README.md'));
  const archive=path.join(output,`Moonlight-${pkg.version}-${windows?'windows':'linux'}-x64.${windows?'zip':'tar.gz'}`);
  if(windows){

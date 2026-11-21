@@ -1,0 +1,52 @@
+{
+ "stats": {
+  "formula_label:retained_source": 17,
+  "formula_label:translated": 2,
+  "algorithm_line:translated": 3,
+  "algorithm_line:retained_source": 4
+ },
+ "algorithm_detail": [
+  {
+   "page": 18,
+   "block": 24,
+   "cjk": 58,
+   "text": "1: Input: Device allocation 𝐴, minimal device allo"
+  },
+  {
+   "page": 18,
+   "block": 25,
+   "cjk": 35,
+   "text": "2: Output: the parallelism strategy for the model "
+  },
+  {
+   "page": 18,
+   "block": 26,
+   "cjk": 0,
+   "text": "8: best_para.cost ←∞\n9: for all t ∈{𝑡𝑚𝑖𝑛,𝑡𝑚𝑖𝑛+ 1.."
+  },
+  {
+   "page": 18,
+   "block": 27,
+   "cjk": 0,
+   "text": "10:\nfor all p ∈{𝑝𝑚𝑖𝑛, 𝑝𝑚𝑖𝑛+ 1..., 𝑁𝑙"
+  },
+  {
+   "page": 18,
+   "block": 29,
+   "cjk": 0,
+   "text": "11:\nd ←𝑁𝑙"
+  },
+  {
+   "page": 18,
+   "block": 30,
+   "cjk": 0,
+   "text": "p×t\n12:\npara_plan ←(𝑝,𝑡,𝑑)\n13:\ncost ←simu(𝑝𝑎𝑟𝑎_𝑝𝑙𝑎"
+  },
+  {
+   "page": 18,
+   "block": 31,
+   "cjk": 22,
+   "text": "14:\nif best_para.𝑐𝑜𝑠𝑡> cost then\n15:\nbest_para.𝑐𝑜𝑠"
+  }
+ ]
+}

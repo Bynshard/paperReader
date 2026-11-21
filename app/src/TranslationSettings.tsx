@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Loader2, PlugZap, ScanSearch } from "lucide-react";
 import { api, type TranslationSettings as Settings } from "./api";
+import GlossaryEditor from "./GlossaryEditor";
 
 type Diagnostic = { ok?: boolean; error?: string; model?: string; latency_ms?: number; version?: string; path?: string } | null;
 
@@ -68,5 +69,6 @@ export default function TranslationSettings() {
       <p className="small muted">Key 由系统凭据存储加密，保存在本机应用设置中，不随论文库同步。OCR 在本机进行，无需 API Key。</p>
     </>}
     {(error || settings?.error) && <p className="error-box" role="alert">{error || settings?.error}</p>}
+    <GlossaryEditor />
   </section>;
 }

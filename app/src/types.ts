@@ -11,16 +11,18 @@ export type Version = {
   model?: string | null;
   created_at: number;
   source_version_id?: string | null;
+  /** Partial translation: 0-based SOURCE page indexes; null/absent = identity. */
+  page_map?: number[] | null;
 };
 
-export type Category = { id: string; name: string; color?: string | null; parent_id?:string|null };
+export type Category = { id: string; name: string; color?: string | null; parent_id?:string|null; paper_count?: number };
 export type ImportedAttachment = { id:string; title:string; content_type:string; status:"copied"|"linked"|"missing"; version_id?:string|null };
 export type SyncProfile = {provider:'qiniu'|'aliyun'|'webdav'|'s3';endpoint:string;bucket:string;region:string;prefix:string;username:string;password?:string;access_key?:string;secret_key?:string;force_path_style:boolean;request_rate?:number};
 export type SyncSettings = {profile:SyncProfile|null;credentials_saved:boolean;auto_minutes:number};
 export type SyncStatus = {id?:string;configured:boolean;running:boolean;status?:'idle'|'running'|'completed'|'failed'|'cancelled';phase?:string;error?:string;conflicts?:number;report?:{pulled:number;pushed:number;changed_documents:number;uploaded_files:number}};
 export type SyncConflict = {id:string;key:string;local:any;remote:any;base:any;paths:string[];created_at:number};
 
-export type Tag = { id: string; name: string; color?: string | null };
+export type Tag = { id: string; name: string; color?: string | null; paper_count?: number };
 
 export type Paper = {
   id: string;
@@ -44,6 +46,8 @@ export type Paper = {
   citation_url?:string|null;
   categories: Category[];
   tags: Tag[];
+  /** Cached one-page structured digest (§3.4.1); null until generated. */
+  digest?: { markdown: string; generated_at: number; model?: string | null; version_id?: string | null } | null;
   versions: Version[];
 };
 
@@ -56,7 +60,11 @@ export type Block = {
   text: string;
 };
 
-export type PaperSummary = Omit<Paper, "versions" | "abstract" | "notes"> & { has_translation: boolean };
+export type PaperSummary = Omit<Paper, "versions" | "abstract" | "notes"> & {
+  has_translation: boolean;
+  /** First body match for the active full-text query (0-based page). */
+  match_snippet?: { page: number; text: string; version_id?: string | null } | null;
+};
 export type PaperSort = "recent" | "title" | "year" | "citations";
 export type PaperPageOptions = {
   query?: string; category?: string; tag?: string; trashed?: boolean;
@@ -70,6 +78,8 @@ export type Annotation = {
   version_kind: "source" | "translated";
   version_id?: string | null;
   page: number;
+  /** Original source page when rendered on a partial translated pane. */
+  source_page?: number;
   rects: { x: number; y: number; w: number; h: number }[];
   quote: string;
   color: string;
@@ -91,6 +101,9 @@ export type JobEvent = {
   jobId: string;
   status?: string;
   phase?: string;
+  progress?: number;
+  detail?: string;
+  elapsed_ms?: number;
   error?: string | null;
   outputVersionId?: string;
   seq?: number;
@@ -104,6 +117,12 @@ export type AppInfo = {
   credentialConfigured: boolean;
 };
 
-export type PdfBytes = { bytes: Uint8Array; versionId: string; pages: number };
+/**
+ * How the renderer gets a PDF.  The desktop returns `bytes` (or, since the
+ * range-streaming change, a `moonlight-pdf://` `url`); the LAN/PWA bridge
+ * always returns a same-origin `/api/pdf/...` `url` so pdf.js can fetch it in
+ * 64 KiB ranges instead of copying the whole file through IPC/blob memory.
+ */
+export type PdfBytes = { bytes?: Uint8Array; url?: string; versionId: string; pages: number };
 
 export type LibraryJob={id:string;paper_id:string;status:string;pages?:string;created_at:number;updated_at?:number;title?:string|null;source_version_id?:string|null;error?:string;output_version_id?:string};

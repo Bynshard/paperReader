@@ -34,7 +34,7 @@ import pymupdf
 
 REF_HEAD = re.compile(r"(?i)^\s*(references|bibliography)\s*$")
 REF_ITEM = re.compile(r"^\s*\[\d+\]")
-FURNITURE = re.compile(r"(?i)(arXiv:\d|conference on neural information|EuroSys|USENIX|Proceedings of the)")
+FURNITURE = re.compile(r"(?i)(arXiv:\d|conference on neural information|EuroSys|USENIX|Proceedings of the|Permission to make digital|ACM ISBN|Copyright)")
 TITLE_SIZE_RATIO = 1.25
 
 
@@ -43,6 +43,9 @@ def now() -> str:
 
 
 FORMULA_ONLY = re.compile(r"^[\s\d\.\(\)\[\]\{\}\+\-−=×·,;:/|]+$")
+MATH_FONT = re.compile(r"(?i)(cmmi|cmsy|cmex|cmr|math|stix|symbol|libertinemath|latinmodern-math)")
+ALGO_LINE = re.compile(r"(?m)^\s*(\d+:|Input:|Output:|Procedure|return\b|for all\b|if\b|while\b|for\b)")
+ALGO_CAPTION = re.compile(r"(?i)^\s*Algorithm\s+\d+")
 CITATION = re.compile(r"(?i)^(ACM Reference Format|Cite this article|©|Copyright)")
 
 
@@ -58,12 +61,62 @@ def page_images(page: pymupdf.Page) -> list[pymupdf.Rect]:
     return rects
 
 
+def _short_lines(text: str) -> bool:
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) < 2:
+        return False
+    short = sum(1 for l in lines if len(l) <= 32)
+    return short / len(lines) >= 0.6 and not re.search(r"[.!?]\s*$", lines[-1])
+
+
+def _is_formula_block(page: pymupdf.Page, rect: pymupdf.Rect, text: str) -> bool:
+    """Formula detection by font class and symbol density (not by output)."""
+    if len(text) > 400:
+        return False
+    math_chars = sum(1 for ch in text if ch in "=+−×·√∑∫≈≤≥∈←→∂∇±")
+    letters = sum(1 for ch in text if ch.isalpha())
+    if letters and math_chars / max(1, letters) > 0.25:
+        return True
+    try:
+        info = page.get_text("dict", clip=rect)
+    except Exception:
+        return False
+    total = 0
+    math = 0
+    for block in info.get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                n = len(span.get("text") or "")
+                total += n
+                if MATH_FONT.search(span.get("font") or ""):
+                    math += n
+    return total > 0 and math / total >= 0.5
+
+
+def _covered(rect: pymupdf.Rect, regions: list[pymupdf.Rect], ratio: float) -> bool:
+    """True when most of the block area falls inside a figure region.
+
+    A block can straddle a vector drawing's bounding box without being figure
+    content (body text next to a figure).  Requiring an area ratio avoids both
+    false positives (body next to a drawing) and the earlier false negatives
+    (a text block slightly larger than its drawing).
+    """
+    area = abs(rect.get_area())
+    if area <= 0:
+        return False
+    for region in regions:
+        inter = rect & region
+        if not inter.is_empty and abs(inter.get_area()) / area >= ratio:
+            return True
+    return False
+
+
 def page_drawings(page: pymupdf.Page) -> list[pymupdf.Rect]:
     rects = []
     try:
         for d in page.get_drawings():
             r = pymupdf.Rect(d["rect"])
-            if r.width > 120 and r.height > 80 and r.get_area() > 6000:
+            if r.width > 80 and r.height > 40 and r.get_area() > 4000:
                 rects.append(r)
     except Exception:
         pass
@@ -74,6 +127,21 @@ def annotate(page: pymupdf.Page, page_index: int, blocks: list[dict[str, Any]]) 
     height = page.rect.height
     drawings = page_drawings(page)
     images = page_images(page)
+    tables = []
+    cells = []
+    try:
+        for t in page.find_tables().tables:
+            tables.append(pymupdf.Rect(t.bbox))
+            for c in t.cells:
+                if c is not None:
+                    cells.append(pymupdf.Rect(c))
+    except Exception:
+        pass
+    fig_caption = [b for b in blocks if re.match(r"(?i)^\s*Figure\s+\d", b.get("text") or "")]
+    fig_bottom = 0.0
+    if fig_caption:
+        fig_bottom = max([b["bbox"][3] for b in fig_caption] + [r.y1 for r in drawings] + [r.y1 for r in images])
+        fig_bottom = min(page.rect.height * 0.7, fig_bottom + 6)
     body_size = max((b.get("median_size") or 0 for b in blocks if b.get("chars", 0) > 200), default=0)
 
     # locate structural headings
@@ -88,6 +156,7 @@ def annotate(page: pymupdf.Page, page_index: int, blocks: list[dict[str, Any]]) 
             abstract_start = i
 
     out = []
+    algo_caption = any(ALGO_CAPTION.match(b.get("text") or "") for b in blocks)
     for i, b in enumerate(blocks):
         kind = b.get("kind") or "body"
         required = bool(b.get("required", True))
@@ -103,11 +172,17 @@ def annotate(page: pymupdf.Page, page_index: int, blocks: list[dict[str, Any]]) 
             kind, required, reason = "reference_item", False, "reference entry: kept in source form"
         elif page_index == 0 and abstract_start is not None and i < abstract_start and i != title_index:
             kind, required, reason = "metadata", False, "author/affiliation metadata, not body prose"
+        elif cells and any(c.contains(pymupdf.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)) for c in cells):
+            kind, required, reason = "table_cell", False, "table cell: structure preserved, not body prose"
         elif (
-            (any(d.contains(rect.tl) and d.contains(rect.br) for d in drawings) or any(img.contains(rect.tl) and img.contains(rect.br) for img in images))
+            _covered(rect, drawings + images, 0.6)
             and not re.match(r"(?i)^\s*(figure|table|algorithm)\b", text)
         ):
             kind, required, reason = "figure_label", False, "text inside a figure (kept as part of the original artwork)"
+        elif algo_caption and (ALGO_LINE.search(text) or (chars <= 12 and any(ch in text for ch in "𝑈∈←×"))) and chars < 400:
+            kind, required, reason = "algorithm_line", False, "algorithm listing: kept as formal structure"
+        elif _is_formula_block(page, rect, text):
+            kind, required, reason = "formula_label", False, "formula object: preserved, not body prose"
         elif CITATION.match(text) or "ACM Reference Format" in text[:80]:
             kind, required, reason = "citation", False, "citation/metadata block, kept as source"
         elif chars <= 20 and FORMULA_ONLY.match(text):

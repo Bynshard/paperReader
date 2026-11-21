@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld("moonlight", {
   revealAttachment: (paperId, fileId) => ipcRenderer.invoke("attachment:reveal", { paperId, fileId }),
   syncSettings: () => ipcRenderer.invoke('sync:settings'),
   configureSync: (input) => ipcRenderer.invoke('sync:configure',input),
+  lanInfo: () => ipcRenderer.invoke('lan:info'),
+  configureLan: (input) => ipcRenderer.invoke('lan:configure',input),
   saveText: (defaultName, text) => ipcRenderer.invoke("dialog:save-text", { defaultName, text }),
   translationAction: (action, input) => ipcRenderer.invoke('translation:action', {action,input}),
   aiAction: (action, input) => ipcRenderer.invoke("ai:action", {action,input}),

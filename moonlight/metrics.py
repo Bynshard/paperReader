@@ -136,7 +136,15 @@ def classify_result(
 
     offset_ratio = None
     if status == "translated" and selected and cluster is not None:
-        first = selected[0]
+        # For the start position, ignore spans that only graze the rectangle
+        # (e.g. a figure label directly above a caption).  Coverage keeps every
+        # intersecting span; only the "first character" origin is strict.
+        def _overlap(s: Any) -> float:
+            area = abs(s.bbox.get_area())
+            inter = s.bbox & rect
+            return abs(inter.get_area()) / area if area > 0 and not inter.is_empty else 0.0
+
+        first = next((s for s in selected if _overlap(s) >= 0.4), selected[0])
         start_delta = ((first.bbox.x0 - rect.x0) ** 2 + (first.bbox.y0 - rect.y0) ** 2) ** 0.5
         offset_ratio = round(start_delta / max(target_page.rect.width, target_page.rect.height), 4)
         if offset_ratio <= START_OFFSET_LIMIT:

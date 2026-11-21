@@ -1,0 +1,128 @@
+/* 平板伴读 pairing card — scoped to LanPairing so the shared settings
+   stylesheet stays untouched. Uses the app design tokens only. */
+
+.lan-pairing h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lan-pairing .lan-toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.lan-pairing .lan-toggle span {
+  font-size: 12.5px;
+}
+
+.lan-pairing > label > input[aria-label="端口"] {
+  max-width: 180px;
+}
+
+.lan-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.lan-status.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.lan-notice {
+  margin: 0;
+  padding: 8px 11px;
+  border: 1px solid #f0dcb4;
+  border-radius: 8px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.lan-urls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
+  gap: 12px;
+}
+
+.lan-url {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.lan-url-code code {
+  display: block;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.lan-url .btn {
+  align-self: flex-start;
+}
+
+.lan-qr-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.lan-qr-svg {
+  width: min(168px, 100%);
+  height: auto;
+  aspect-ratio: 1 / 1;
+}
+
+.lan-hint {
+  padding: 11px 13px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: #faf9f6;
+}
+
+.lan-hint p {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.lan-hint p:last-child {
+  margin-bottom: 0;
+}
+
+.lan-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12.5px;
+}

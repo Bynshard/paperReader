@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, Columns3, FileDown, Inbox, LayoutGrid, MoreHorizontal, Search, Star, Table2, Trash2, Undo2, Upload, X } from "lucide-react";
+import { ChevronDown, Columns3, FileDown, FileUp, Inbox, LayoutGrid, MoreHorizontal, Search, Star, Table2, Trash2, Undo2, Upload, X } from "lucide-react";
 import PaperTable, { COLUMN_LABELS, DEFAULT_COLUMN_VISIBILITY, HIDEABLE_COLUMNS, type PaperTableActions } from "./PaperTable";
 import type { ColumnSizingState, VisibilityState } from "@tanstack/react-table";
 import FloatingLayer from "./FloatingLayer";
-import { PaperMenuItems, type PaperMenuActions } from "./PaperMenu";
+import { PaperMenuItems, type CitationFormat, type PaperMenuActions } from "./PaperMenu";
 import IdentifierImport from "./IdentifierImport";
+import { matchVenueTier } from "./venueTier";
+import { setPaperDragData } from "./drag";
+import Snippet from "./Snippet";
 import type { PaperSort, PaperSummary } from "./types";
 
 type Props = {
@@ -15,19 +18,28 @@ type Props = {
   offset: number; pageSize: number; onOffset: (offset: number) => void;
   query: string; onQuery: (q: string) => void;
   title?: string;
-  onOpen: (p: PaperSummary) => void;
+  onOpen: (p: PaperSummary, jump?: { page: number; query?: string; versionId?: string }) => void;
   onInspect?: (p: PaperSummary) => void;
   inspectedId?: string;
+  /** Closes the Inspector drawer from the table keyboard shortcuts (FEAT-UX-05). */
+  onCloseInspect?: () => void;
   onImport: () => void;
+  /** FEAT-UX-04: import a .bib/.ris citation list (metadata-only papers). */
+  onImportBibliography?: (format: "bibtex" | "ris", text: string) => Promise<void> | void;
   onZotero: () => void;
   onToggleFavorite: (p: PaperSummary) => void;
   onTrash: (p: PaperSummary) => void;
   onRestore: (p: PaperSummary) => void;
   onPurge: (p: PaperSummary) => void;
   onExport: (p: PaperSummary, fmt: "bibtex" | "ris") => void;
+  onCopyCitation?: (p: PaperSummary, fmt: CitationFormat) => void;
   onBulkExport?: (ids: string[], fmt: "bibtex" | "ris") => void;
   onEdit?: (p: PaperSummary) => void;
   onOrganize?: (ids: string[]) => void;
+  /** FEAT-AI-02: cross-paper question / comparison matrix for 2–20 papers. */
+  onSynthesize?: (ids: string[], mode: "matrix" | "ask") => void;
+  /** FEAT-AI-04: previewable library-organising agent (Plan → Apply). */
+  onAgent?: (ids: string[]) => void;
   onShortNote?: (paper: PaperSummary, text: string) => Promise<void>;
   onRefreshCitations?: (id: string, force?: boolean) => Promise<boolean>;
   onTag?: (name: string) => void;
@@ -63,7 +75,7 @@ const PRESETS: Record<string, Record<string, boolean>> = {
 };
 
 export default function Library(props: Props) {
-  const { papers, total, loading, error, sort, onSort, offset, pageSize, onOffset, query, onQuery, onOpen, onInspect, inspectedId, onImport, onZotero, onToggleFavorite, onTrash, onRestore, onPurge, onExport, onBulkExport, onEdit, onOrganize, onShortNote, onRefreshCitations, onTag, onCycleStatus, onMarkMany, onTranslateMany, onTrashMany, onRestoreMany, onPurgeMany, onEmptyTrash, trashed, importing, importProgress } = props;
+  const { papers, total, loading, error, sort, onSort, offset, pageSize, onOffset, query, onQuery, onOpen, onInspect, inspectedId, onCloseInspect, onImport, onImportBibliography, onImported, onZotero, onToggleFavorite, onTrash, onRestore, onPurge, onExport, onCopyCitation, onBulkExport, onEdit, onOrganize, onSynthesize, onAgent, onShortNote, onRefreshCitations, onTag, onCycleStatus, onMarkMany, onTranslateMany, onTrashMany, onRestoreMany, onPurgeMany, onEmptyTrash, trashed, importing, importProgress } = props;
   const [view, setView] = useState<"table" | "cards">(() => { try { return localStorage.getItem("moonlight-library-view-v1") === "cards" ? "cards" : "table"; } catch { return "table"; } });
   useEffect(() => { try { localStorage.setItem("moonlight-library-view-v1", view); } catch { /* ignore */ } }, [view]);
   const initial = useMemo(initialPrefs, []);
@@ -88,6 +100,8 @@ export default function Library(props: Props) {
   };
   const [importMenu, setImportMenu] = useState<{ x: number; y: number } | null>(null);
   const [identifierOpen, setIdentifierOpen] = useState(false);
+  const [bibliographyBusy, setBibliographyBusy] = useState(false);
+  const bibliographyInput = useRef<HTMLInputElement>(null);
   const [columnsMenu, setColumnsMenu] = useState<{ x: number; y: number } | null>(null);
   const importButton = useRef<HTMLButtonElement>(null);
   const columnsButton = useRef<HTMLButtonElement>(null);
@@ -117,9 +131,30 @@ export default function Library(props: Props) {
     finally { setNoteBusy(false); }
   };
 
+  /**
+   * FEAT-UX-04: read a .bib/.ris file client-side (no Electron dialog needed)
+   * and hand the raw text to the backend importer through App so the toast and
+   * query invalidation stay in one place.
+   */
+  const importBibliographyFile = async (file: File | undefined) => {
+    if (!file) return;
+    const format = /\.bib$/i.test(file.name) ? "bibtex" : /\.ris$/i.test(file.name) ? "ris" : null;
+    if (!format) { onImported?.("请选择 .bib 或 .ris 文献清单文件"); return; }
+    if (!onImportBibliography) { onImported?.("当前客户端不支持 BibTeX / RIS 导入，请升级桌面客户端"); return; }
+    setBibliographyBusy(true);
+    try {
+      const text = await readFileText(file);
+      await onImportBibliography(format, text);
+    } catch (e) {
+      onImported?.(`导入文献清单失败：${(e as Error).message}`);
+    } finally {
+      setBibliographyBusy(false);
+    }
+  };
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtual = useVirtualizer({ count: papers.length, getScrollElement: () => scrollRef.current, estimateSize: () => 130, getItemKey: (index) => papers[index].id, overscan: 4 });
-  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }); setQuick(null); setSelected(new Set()); setMenu(null); }, [offset, sort, query]);
+  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }); setQuick(null); setSelected(new Set()); lastPicked.current = null; setMenu(null); }, [offset, sort, query]);
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
@@ -141,12 +176,32 @@ export default function Library(props: Props) {
   const anchorOf = (element: HTMLElement | null) => { const rect = element?.getBoundingClientRect(); return rect ? { x: rect.left + rect.width / 2, y: rect.bottom } : { x: 12, y: 60 }; };
 
   const toggleAll = (checked: boolean) => setSelected(checked ? new Set(papers.map((paper) => paper.id)) : new Set());
-  const toggleOne = (id: string, checked: boolean) => setSelected((old) => { const next = new Set(old); if (checked) next.add(id); else next.delete(id); return next; });
+  const lastPicked = useRef<number | null>(null);
+  const toggleOne = (id: string, checked: boolean, shiftKey = false) => {
+    const index = papers.findIndex((paper) => paper.id === id);
+    // Capture the anchor before setState: its updater runs later, and updating
+    // `lastPicked` first would make the range collapse to the current row.
+    const anchor = lastPicked.current;
+    setSelected((old) => {
+      const next = new Set(old);
+      if (shiftKey && anchor !== null && index >= 0) {
+        const [from, to] = [anchor, index].sort((a, b) => a - b);
+        for (let i = from; i <= to; i++) {
+          const paper = papers[i];
+          if (!paper) continue;
+          if (checked) next.add(paper.id); else next.delete(paper.id);
+        }
+      } else if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+    if (index >= 0) lastPicked.current = index;
+  };
 
   const tableActions: PaperTableActions = {
-    onOpen, onInspect: onInspect ?? (() => undefined), onToggleFavorite, onOrganize, onTag, onEdit, onTrash, onRestore, onPurge, onExport, onCycleStatus,
+    onOpen, onInspect: onInspect ?? (() => undefined), onToggleFavorite, onOrganize, onTag, onEdit, onTrash, onRestore, onPurge, onExport, onCopyCitation, onCycleStatus,
   };
-  const menuActions: PaperMenuActions = { onInspect, onOpen, onEdit, onOrganize, onExport, onTrash, onRestore, onPurge };
+  const menuActions: PaperMenuActions = { onInspect, onOpen, onEdit, onOrganize, onExport, onCopyCitation, onTrash, onRestore, onPurge };
 
   const preset = (value: string) => {
     setPresetName(value);
@@ -154,6 +209,9 @@ export default function Library(props: Props) {
     setVisibility({ ...DEFAULT_COLUMN_VISIBILITY, ...(PRESETS[value] || {}) });
   };
   const changeVisibility = (next: typeof visibility) => { setPresetName("custom"); setVisibility(next); };
+
+  /** Cross-paper AI calls cost real model tokens: enforce the 2–20 budget in the UI. */
+  const crossPaperDisabled = selected.size < 2 || selected.size > 20;
 
   const noteEditor = (paper: PaperSummary) => quick?.id === paper.id && (
     <form className="quick-note" onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveNote(paper); }}>
@@ -199,7 +257,13 @@ export default function Library(props: Props) {
         <button onClick={() => { setImportMenu(null); onImport(); }}><Upload size={15} />导入本地 PDF</button>
         <button onClick={() => { setImportMenu(null); onZotero(); }}>从 Zotero 导入</button>
         <button onClick={() => { setImportMenu(null); setIdentifierOpen(true); }}>通过 DOI / arXiv 导入</button>
+        <button disabled={bibliographyBusy || !onImportBibliography} onClick={() => { setImportMenu(null); bibliographyInput.current?.click(); }}><FileUp size={15} />导入 BibTeX / RIS 文献清单</button>
       </FloatingLayer>}
+
+      {/* FEAT-UX-04: hidden picker; the text is parsed by the Rust importer. */}
+      <input ref={bibliographyInput} type="file" accept=".bib,.ris" className="sr-only" tabIndex={-1}
+        aria-label="导入 BibTeX / RIS 文献清单"
+        onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void importBibliographyFile(file); }} />
 
       {columnsMenu && <FloatingLayer x={columnsMenu.x} y={columnsMenu.y} onClose={() => setColumnsMenu(null)} ignore={columnsButton} className="menu library-menu column-menu" label="显示列">
         <div className="menu-head">显示列</div>
@@ -223,6 +287,7 @@ export default function Library(props: Props) {
         </div>
       ) : view === "table" ? (
         <PaperTable {...tableActions} papers={papers} total={total} offset={offset} query={query} sort={sort} selected={selected} inspectedId={inspectedId}
+          onCloseInspect={onCloseInspect} onTrashMany={onTrashMany}
           onSelect={toggleOne} onSelectAll={toggleAll} onSort={onSort} onNote={(paper) => { setQuick({ id: paper.id, text: paper.short_note || "", updatedAt: paper.updated_at }); setNoteError(""); }} noteId={quick?.id} renderNote={noteEditor}
           refreshing={refreshing} onRefresh={(id) => void refresh([id], true)} visibility={visibility} onVisibilityChange={changeVisibility} sizing={sizing} onColumnSizingChange={setSizing} />
       ) : (
@@ -234,9 +299,12 @@ export default function Library(props: Props) {
             <div style={{ height: virtual.getTotalSize(), width: "100%", position: "relative" }}>
               {virtual.getVirtualItems().map((item) => {
                 const paper = papers[item.index];
+                const tier = matchVenueTier(paper.venue);
                 return (
                   <div key={item.key} data-index={item.index} ref={virtual.measureElement} style={{ position: "absolute", top: 0, left: 0, width: "100%", paddingBottom: 8, transform: `translateY(${item.start}px)` }}>
                     <div className={`paper-row card-row ${paper.deleted ? "deleted" : ""} ${inspectedId === paper.id ? "inspected" : ""} ${selected.has(paper.id) ? "selected" : ""}`} data-paper-id={paper.id}
+                      draggable={!paper.deleted}
+                      onDragStart={(event) => setPaperDragData(event.dataTransfer, selected.has(paper.id) ? [...selected] : [paper.id])}
                       onClick={(event) => { if (event.detail > 1) return; if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; previewLater(paper); }}
                       onDoubleClick={(event) => { if ((event.target as HTMLElement).closest("button,input,form,a,select,textarea")) return; clearTimeout(inspectTimer.current); onOpen(paper); }}
                       onContextMenu={(event) => { event.preventDefault(); setMenu({ paper, x: event.clientX, y: event.clientY }); }}>
@@ -247,10 +315,14 @@ export default function Library(props: Props) {
                         <div className="paper-meta">
                           <span>{paper.authors || "未知作者"}</span>
                           {paper.year && <span>{paper.year}</span>}
-                          {paper.venue && <span>{paper.venue}</span>}
+                          {paper.venue && <span className="card-venue">{paper.venue}{tier && <span className={`venue-badge ${tier.tone}`} title={`${tier.name} · ${tier.label}`}>{tier.label}</span>}</span>}
                           {paper.doi && <span className="mono">DOI {paper.doi}</span>}
                           {paper.arxiv && <span className="mono">arXiv:{paper.arxiv}</span>}
                         </div>
+                        {paper.match_snippet && <div className="card-match" title={paper.match_snippet.text}>
+                          <Snippet text={paper.match_snippet.text} query={query} />
+                          <button className="match-jump" onClick={(event) => { event.stopPropagation(); onOpen(paper, { page: paper.match_snippet!.page + 1, query, versionId: paper.match_snippet!.version_id ?? undefined }); }}>p.{paper.match_snippet.page + 1} 直达</button>
+                        </div>}
                         {paper.short_note && quick?.id !== paper.id && <div className="paper-short-note" title={paper.short_note}>{paper.short_note}</div>}
                         {noteEditor(paper)}
                         <div className="paper-tags">
@@ -290,6 +362,14 @@ export default function Library(props: Props) {
             <button className="btn tiny danger" disabled={!onEmptyTrash} onClick={() => { onEmptyTrash?.(); setSelected(new Set()); }}>清空回收站</button>
           </> : <>
             <button className="btn tiny" disabled={!onOrganize} onClick={() => onOrganize?.([...selected])}>分类 / 标签</button>
+            <button className="btn tiny" disabled={!onSynthesize || crossPaperDisabled}
+              title={crossPaperDisabled ? "跨论文提问需选择 2–20 篇论文" : "跨论文提问"}
+              onClick={() => onSynthesize?.([...selected], "ask")}>💬 跨论文提问</button>
+            <button className="btn tiny" disabled={!onSynthesize || crossPaperDisabled}
+              title={crossPaperDisabled ? "对比矩阵需选择 2–20 篇论文" : "生成对比矩阵"}
+              onClick={() => onSynthesize?.([...selected], "matrix")}>📊 生成对比矩阵</button>
+            <button className="btn tiny" disabled={!onAgent} title="先预览 AI 整理计划，再逐条确认应用"
+              onClick={() => onAgent?.([...selected])}>🤖 整理 Agent</button>
             <button className="btn tiny" disabled={refreshing || !onRefreshCitations} onClick={() => void refresh([...selected])}>更新引用量</button>
             {refreshing && <button className="btn tiny" onClick={() => { stop.current = true; }}>停止</button>}
             <button className="btn tiny" disabled={!onMarkMany} onClick={() => onMarkMany?.([...selected], "read")}>标记已读</button>
@@ -320,3 +400,14 @@ export default function Library(props: Props) {
 }
 
 const STATUS_LABELS = { unread: "未读", reading: "在读", read: "已读" };
+
+/** File.text() fallback for engines (older jsdom/WebViews) without Blob.text. */
+function readFileText(file: File): Promise<string> {
+  if (typeof file.text === "function") return file.text();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error || new Error("读取文件失败"));
+    reader.readAsText(file);
+  });
+}

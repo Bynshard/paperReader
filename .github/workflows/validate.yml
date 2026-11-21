@@ -1,4 +1,4 @@
-name: Windows build
+name: Installers (MSI + APK)
 
 on:
   push:
@@ -20,9 +20,9 @@ env:
 
 jobs:
   windows:
-    name: Windows x64 portable
+    name: Windows x64 (ZIP + MSI)
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -59,6 +59,26 @@ jobs:
         run: python scripts/prepare_babeldoc.py
       - name: Native Windows library smoke
         run: python scripts/smoke_windows.py
+      - name: Stage Windows code-signing certificate
+        env:
+          SIGN_PFX_B64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          SIGN_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+        run: |
+          if (-not $env:SIGN_PFX_B64) {
+            Write-Host "No WINDOWS_SIGN_PFX_BASE64 secret; producing unsigned test installers."
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "moonlight-sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_B64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName | Select-Object -Last 1
+          if (-not $signtool) { $signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue }
+          if (-not $signtool) { throw "signtool.exe not found" }
+          $signtoolPath = if ($signtool -is [System.IO.FileInfo]) { $signtool.FullName } else { $signtool.Source }
+          "MOONLIGHT_SIGN_PFX=$pfx" >> $env:GITHUB_ENV
+          "MOONLIGHT_SIGN_PFX_PASSWORD=$env:SIGN_PASSWORD" >> $env:GITHUB_ENV
+          "MOONLIGHT_SIGNTOOL=$signtoolPath" >> $env:GITHUB_ENV
+          "MOONLIGHT_SIGN_TIMESTAMP_URL=http://timestamp.digicert.com" >> $env:GITHUB_ENV
       - name: Package Windows ZIP
         env:
           MOONLIGHT_PYTHON: python
@@ -68,6 +88,31 @@ jobs:
         run: python scripts/verify_windows_package.py
       - name: Test the packaged Windows application
         run: node app/e2e/windows.mjs
+      - name: Install WiX toolset for MSI
+        run: |
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            choco install wixtoolset --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $wix = Get-ChildItem "C:\Program Files (x86)\WiX Toolset*" -Directory -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending | Select-Object -First 1
+            if ($wix) {
+              $wixBin = Join-Path $wix.FullName "bin"
+              $env:Path = $wixBin + ";" + $env:Path
+              $wixBin >> $env:GITHUB_PATH
+            }
+          }
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) { throw "WiX candle.exe not found" }
+          Write-Host "Using $((Get-Command candle.exe).Source)"
+      - name: Build MSI installer
+        run: |
+          npm --prefix app run package:msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify MSI installer
+        run: |
+          $msi = Get-ChildItem release/Moonlight-*-windows-x64.msi | Select-Object -First 1
+          if (-not $msi -or $msi.Length -lt 10MB) { throw "MSI was not produced or is implausibly small" }
+          if (-not (Test-Path "$($msi.FullName).sha256")) { throw "MSI checksum missing" }
+          Get-Content "$($msi.FullName).sha256"
       - name: Upload Windows test package
         id: upload
         uses: actions/upload-artifact@v7.0.2
@@ -76,6 +121,8 @@ jobs:
           path: |
             release/Moonlight-*-windows-x64.zip
             release/Moonlight-*-windows-x64.zip.sha256
+            release/Moonlight-*-windows-x64.msi
+            release/Moonlight-*-windows-x64.msi.sha256
             release/manifest-windows.json
           if-no-files-found: error
           retention-days: 14
@@ -85,9 +132,10 @@ jobs:
           ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
         run: |
           @"
-          ## Windows x64 测试包
+          ## Windows x64 测试包 + MSI
           [下载本次构建的测试包]($env:ARTIFACT_URL)
-          下载后解压 artifact，再解压其中的 Moonlight ZIP，运行 Moonlight-win32-x64/moonlight.exe。
+          包含 ZIP 便携版与可直接安装的 `Moonlight-*-windows-x64.msi`（未签名，SmartScreen 可能提示）。
+          ZIP 解压后运行 Moonlight-win32-x64/moonlight.exe。
           包含原生核心、PDF 阅读器、rclone 和官方 Codex 登录组件；无需安装 Node、Rust 或 Python 即可启动。
           全文 PDF 翻译仍需另行配置 BabelDOC 和模型。当前为未签名测试版。
           "@ >> $env:GITHUB_STEP_SUMMARY
@@ -100,10 +148,92 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  android:
+    name: Android Pad APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 35
+        run: |
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build installable APK (release if keystore configured)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./app/package.json').version")
+          VERSION_CODE=${GITHUB_RUN_NUMBER:-1}
+          mkdir -p release
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            if [ -z "${ANDROID_KEYSTORE_PASSWORD:-}" ] || [ -z "${ANDROID_KEY_ALIAS:-}" ]; then
+              echo "ANDROID_KEYSTORE_BASE64 is set but password/alias is missing" >&2
+              exit 1
+            fi
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/moonlight.jks"
+            export MOONLIGHT_ANDROID_KEYSTORE="$RUNNER_TEMP/moonlight.jks"
+            export MOONLIGHT_ANDROID_KEYSTORE_PASSWORD="$ANDROID_KEYSTORE_PASSWORD"
+            export MOONLIGHT_ANDROID_KEY_ALIAS="$ANDROID_KEY_ALIAS"
+            export MOONLIGHT_ANDROID_KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
+            gradle -p android :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace \
+              -PmoonlightVersion="$VERSION" -PmoonlightVersionCode="$VERSION_CODE"
+            cp android/app/build/outputs/apk/release/app-release.apk "release/Moonlight-$VERSION-pad.apk"
+            cp android/app/build/outputs/bundle/release/app-release.aab "release/Moonlight-$VERSION-pad.aab"
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret; building a debug-signed APK."
+            gradle -p android :app:assembleDebug --no-daemon --stacktrace \
+              -PmoonlightVersion="$VERSION" -PmoonlightVersionCode="$VERSION_CODE"
+            cp android/app/build/outputs/apk/debug/app-debug.apk "release/Moonlight-$VERSION-pad-debug.apk"
+          fi
+          for file in release/Moonlight-*.apk release/Moonlight-*.aab; do
+            [ -e "$file" ] || continue
+            sha256sum "$file" > "$file.sha256"
+            ls -lh "$file"
+          done
+      - name: Upload APK
+        id: upload-apk
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: Moonlight-android-pad-${{ github.run_number }}
+          path: |
+            release/Moonlight-*.apk
+            release/Moonlight-*.apk.sha256
+            release/Moonlight-*.aab
+            release/Moonlight-*.aab.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: APK instructions
+        env:
+          APK_ARTIFACT_URL: ${{ steps.upload-apk.outputs.artifact-url }}
+        run: |
+          {
+            echo "## Android 平板 APK"
+            echo "[下载本次构建的 Android 产物]($APK_ARTIFACT_URL)"
+            echo "APK 是连接桌面 LAN/PWA 服务的 WebView 外壳：首次打开粘贴桌面端「设置 → 平板伴读」的配对链接。"
+            echo "配置 ANDROID_KEYSTORE_BASE64 等 secrets 时产出 release 签名 APK + AAB；否则为 debug 签名测试包，需允许安装未知来源应用。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   release:
-    name: Publish Windows Release
+    name: Publish Release (MSI + APK)
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: windows
+    needs: [windows, android]
     runs-on: windows-2025
     permissions:
       contents: write
@@ -114,26 +244,44 @@ jobs:
       RELEASE_TAG: ${{ github.ref_name }}
       RUN_ID: ${{ github.run_id }}
       ARTIFACT_NAME: Moonlight-windows-x64-${{ github.run_number }}
+      ANDROID_ARTIFACT_NAME: Moonlight-android-pad-${{ github.run_number }}
     steps:
       - name: Download tested Windows package
         run: |
           gh run download $env:RUN_ID --name $env:ARTIFACT_NAME --dir release-assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Download tested Android APK
+        run: |
+          gh run download $env:RUN_ID --name $env:ANDROID_ARTIFACT_NAME --dir release-assets/android
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Publish preview Release
         run: |
           $manifest = Get-Content release-assets/manifest-windows.json -Raw | ConvertFrom-Json
           if ($env:RELEASE_TAG -cne "v$($manifest.version)") { throw "Tag and package version differ" }
           $zip = "release-assets/Moonlight-$($manifest.version)-windows-x64.zip"
+          $msi = "release-assets/Moonlight-$($manifest.version)-windows-x64.msi"
+          $apkFile = Get-ChildItem "release-assets/android/Moonlight-*.apk" | Select-Object -First 1
+          if (-not $apkFile) { throw "Missing APK asset" }
+          $apk = $apkFile.FullName
+          $aabFile = Get-ChildItem "release-assets/android/Moonlight-*.aab" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $assets = @($zip, "$zip.sha256", $msi, "$msi.sha256", $apk, "$apk.sha256")
+          if ($aabFile) { $aab = $aabFile.FullName; $assets += @($aab, "$aab.sha256") }
+          $assets += "release-assets/manifest-windows.json"
+          foreach ($file in $assets) {
+            if (-not (Test-Path $file)) { throw "Missing release asset: $file" }
+          }
           $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $manifest.sha256) { throw "Package checksum mismatch" }
+          $apkKind = if ($apkFile.Name -match "debug") { "debug 签名测试包，需允许安装未知来源应用" } else { "release 签名 APK（如已配置 Android keystore）" }
           @"
-          Windows 10/11 x64 便携测试版。下载 ZIP，完整解压后运行 Moonlight-win32-x64/moonlight.exe。
+          Moonlight $($manifest.version) 预览版，包含 Windows 安装包与 Android 平板伴侣。
 
-          包含论文库、PDF 阅读器、rclone 和官方 Codex 登录组件。
-          全文 PDF 版式翻译仍需另行配置 BabelDOC 和模型。当前为未签名预发布版。
+          **Windows 10/11 x64**：运行 Moonlight-*-windows-x64.msi 安装；若 CI 配置了代码签名证书则为已签名安装包，否则 SmartScreen 可能提示。ZIP 便携版同时提供。
+          **Android 平板**：安装 $($apkFile.Name)（$apkKind），首次打开粘贴桌面端「设置 → 平板伴读」的配对链接；它连接桌面局域网 PWA，不在平板本地保存论文库。
 
-          Windows 原生测试、打包校验和打包后桌面测试均已通过。
+          包含论文库、PDF 阅读器、rclone 与官方 Codex 登录组件；全文 PDF 版式翻译仍需配置 BabelDOC 和模型。
+          Windows 原生测试、打包校验、打包后桌面测试与 Android 构建均已通过。
           Build commit: $($manifest.commit)
           "@ | Set-Content release-notes.md -Encoding utf8
-          gh release create $env:RELEASE_TAG $zip "$zip.sha256" release-assets/manifest-windows.json --verify-tag --title "Moonlight $env:RELEASE_TAG · Windows preview" --prerelease --notes-file release-notes.md
+          gh release create $env:RELEASE_TAG @assets --verify-tag --title "Moonlight $env:RELEASE_TAG · Windows MSI + Android APK" --prerelease --notes-file release-notes.md
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

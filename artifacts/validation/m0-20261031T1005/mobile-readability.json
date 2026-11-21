@@ -1,0 +1,141 @@
+{
+  "phones_dp": {
+    "compact_360": 360,
+    "pixel_412": 412,
+    "tablet_800": 800
+  },
+  "documents": {
+    "attn_en": {
+      "file": "corpus/raw/attn.pdf",
+      "page_pt": [
+        612.0,
+        792.0
+      ],
+      "text_columns_page2": 1,
+      "median_text_line_pt": 396.0,
+      "stats": {
+        "pages": 15,
+        "spans_sampled": 1510,
+        "cjk_char_ratio": 0.0,
+        "font_p50": 9.96,
+        "font_p10": 8.88,
+        "font_p90": 10.06,
+        "distinct_sizes": 34
+      },
+      "fit_width_scale": {
+        "compact_360": 0.588,
+        "pixel_412": 0.673,
+        "tablet_800": 1.307
+      },
+      "effective_px_at_fit_width": {
+        "compact_360": 5.86,
+        "pixel_412": 6.7,
+        "tablet_800": 13.02
+      },
+      "columns_per_phone_view_at_100pct": {
+        "compact_360": 0.91,
+        "pixel_412": 1.04,
+        "tablet_800": 2.02
+      }
+    },
+    "attn_zh": {
+      "file": "artifacts/validation/m0-20261031T1005/outputs/arxiv-1706.03762/attn.no_watermark.zh-CN.mono.pdf",
+      "page_pt": [
+        612.0,
+        792.0
+      ],
+      "text_columns_page2": 1,
+      "median_text_line_pt": 388.5,
+      "stats": {
+        "pages": 15,
+        "spans_sampled": 1036,
+        "cjk_char_ratio": 0.81,
+        "font_p50": 9.96,
+        "font_p10": 6.97,
+        "font_p90": 9.96,
+        "distinct_sizes": 24
+      },
+      "fit_width_scale": {
+        "compact_360": 0.588,
+        "pixel_412": 0.673,
+        "tablet_800": 1.307
+      },
+      "effective_px_at_fit_width": {
+        "compact_360": 5.86,
+        "pixel_412": 6.7,
+        "tablet_800": 13.02
+      },
+      "columns_per_phone_view_at_100pct": {
+        "compact_360": 0.93,
+        "pixel_412": 1.06,
+        "tablet_800": 2.06
+      }
+    },
+    "hybridflow_en": {
+      "file": "corpus/raw/hybridflow.pdf",
+      "page_pt": [
+        612.0,
+        792.0
+      ],
+      "text_columns_page2": 2,
+      "median_text_line_pt": 240.0,
+      "stats": {
+        "pages": 19,
+        "spans_sampled": 2369,
+        "cjk_char_ratio": 0.0,
+        "font_p50": 9.96,
+        "font_p10": 8.38,
+        "font_p90": 10.06,
+        "distinct_sizes": 64
+      },
+      "fit_width_scale": {
+        "compact_360": 0.588,
+        "pixel_412": 0.673,
+        "tablet_800": 1.307
+      },
+      "effective_px_at_fit_width": {
+        "compact_360": 5.86,
+        "pixel_412": 6.7,
+        "tablet_800": 13.02
+      },
+      "columns_per_phone_view_at_100pct": {
+        "compact_360": 1.5,
+        "pixel_412": 1.72,
+        "tablet_800": 3.33
+      }
+    },
+    "hybridflow_zh": {
+      "file": "artifacts/validation/m0-20261031T1005/outputs/arxiv-2409.19256/hybridflow.no_watermark.zh-CN.mono.pdf",
+      "page_pt": [
+        612.0,
+        792.0
+      ],
+      "text_columns_page2": 2,
+      "median_text_line_pt": 234.7,
+      "stats": {
+        "pages": 19,
+        "spans_sampled": 1755,
+        "cjk_char_ratio": 0.808,
+        "font_p50": 9.96,
+        "font_p10": 7.27,
+        "font_p90": 9.96,
+        "distinct_sizes": 90
+      },
+      "fit_width_scale": {
+        "compact_360": 0.588,
+        "pixel_412": 0.673,
+        "tablet_800": 1.307
+      },
+      "effective_px_at_fit_width": {
+        "compact_360": 5.86,
+        "pixel_412": 6.7,
+        "tablet_800": 13.02
+      },
+      "columns_per_phone_view_at_100pct": {
+        "compact_360": 1.53,
+        "pixel_412": 1.76,
+        "tablet_800": 3.41
+      }
+    }
+  }
+}

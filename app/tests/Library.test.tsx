@@ -68,4 +68,30 @@ describe('Style-inspired table view',()=>{
     expect(screen.queryByRole('columnheader',{name:'一句话速记'})).toBeNull();
     fireEvent.click(screen.getByRole('button',{name:'卡片',exact:true}));await waitFor(()=>expect(localStorage.getItem('moonlight-library-view-v1')).toBe('cards'));
   });
+  it('shows the venue column with an offline CCF badge',async()=>{
+    const p=props([{...paper(1),venue:'Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)'}]);
+    render(<Library {...p}/>);
+    expect(await screen.findByText('期刊 / 会议')).toBeTruthy();
+    expect(screen.getByText('CCF-A')).toBeTruthy();
+  });
+  it('shows a full-text match snippet and opens the reader at the matching page',async()=>{
+    const p=props([{...paper(1),match_snippet:{page:4,text:'…attention is all you need…',version_id:'v'}}]);
+    render(<Library {...p}/>);
+    expect(await screen.findByText(/attention is all you need/)).toBeTruthy();
+    fireEvent.click(screen.getByText('p.5 直达'));
+    expect(p.onOpen).toHaveBeenCalledWith(expect.objectContaining({id:'1'}),{page:5,query:'',versionId:'v'});
+  });
+  it('moves inspection with arrow keys, opens with Enter and shift-selects a range',async()=>{
+    const p=props([paper(0),paper(1),paper(2)]);
+    render(<Library {...p}/>);
+    const table=await screen.findByRole('table',{name:'论文增强列表'});
+    fireEvent.keyDown(table,{key:'ArrowDown'});
+    await waitFor(()=>expect(p.onInspect).toHaveBeenCalledWith(p.papers[0]));
+    fireEvent.keyDown(table,{key:'Enter'});
+    await waitFor(()=>expect(p.onOpen).toHaveBeenCalledWith(p.papers[0]));
+    fireEvent.click(screen.getByLabelText('选择论文 Paper 0'));
+    fireEvent.click(screen.getByLabelText('选择论文 Paper 2'),{shiftKey:true});
+    const bar=await screen.findByRole('toolbar',{name:'批量操作'});
+    expect(bar.textContent).toContain('已选 3 篇');
+  });
 });

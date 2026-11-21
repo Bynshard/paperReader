@@ -6,7 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -23,13 +23,16 @@ CREATE TABLE IF NOT EXISTS papers (
   year TEXT, venue TEXT, doi TEXT, arxiv TEXT, abstract TEXT,
   imported_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   favorite INTEGER NOT NULL DEFAULT 0, read_status TEXT NOT NULL DEFAULT 'unread',
-  deleted_at INTEGER, notes TEXT NOT NULL DEFAULT ''
+  deleted_at INTEGER, notes TEXT NOT NULL DEFAULT '',
+  last_read_page INTEGER, last_read_fraction REAL, last_read_mode TEXT, last_read_at INTEGER,
+  digest_json TEXT
 );
 CREATE TABLE IF NOT EXISTS versions (
   id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
   kind TEXT NOT NULL, sha256 TEXT NOT NULL, rel_path TEXT NOT NULL,
   pages INTEGER NOT NULL, bytes INTEGER NOT NULL, lang TEXT NOT NULL DEFAULT '',
-  engine TEXT, model TEXT, created_at INTEGER NOT NULL, source_version_id TEXT
+  engine TEXT, model TEXT, created_at INTEGER NOT NULL, source_version_id TEXT,
+  page_map TEXT
 );
 CREATE TABLE IF NOT EXISTS blocks (
   id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -81,13 +84,79 @@ CREATE INDEX IF NOT EXISTS idx_categories_paper ON paper_categories(category_id,
 CREATE INDEX IF NOT EXISTS idx_tags_paper ON paper_tags(tag_id, paper_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_paper ON annotations(paper_id, page);
 CREATE INDEX IF NOT EXISTS idx_chats_paper_time ON chats(paper_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- FEAT-UX-03: user-managed terminology table. `source` is unique per library
+-- (case-insensitively) so saving is idempotent; `enabled=0` keeps a row while
+-- excluding it from every prompt/CSV injection path.
+CREATE TABLE IF NOT EXISTS glossary_terms (
+  id TEXT PRIMARY KEY, source TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  target TEXT NOT NULL, domain TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_glossary_enabled ON glossary_terms(enabled, source);
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
 "#;
 
 /// Bump whenever a migration in [`apply_migrations`] is added.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 7;
+
+/// Upper bound for expanding a `--pages` selector into a page map.  A selector
+/// is user input (or an engine argument), so an absurd range like `1-99999999`
+/// must never allocate without bound; exceeding this falls back to the identity
+/// mapping instead of failing an otherwise finished translation.
+const MAX_PAGE_MAP: i64 = 100_000;
 
 pub type Emitter = Arc<dyn Fn(Value) + Send + Sync>;
+
+/// Prompt sentence that every glossary injection path shares.  The loopback
+/// gateway skips requests that already contain it, which is how
+/// `ai::translate_text`/`explain_with` can attach a *matched* subset without the
+/// gateway appending the whole table a second time.
+pub const GLOSSARY_MARKER: &str = "遇到以下专业术语按指定译法";
+
+/// Hard cap for one library's glossary (FEAT-UX-03 §schema).
+pub const GLOSSARY_MAX_TERMS: usize = 500;
+
+/// One saved glossary row, as read back for prompts/CSV export.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlossaryTerm {
+    pub source: String,
+    pub target: String,
+    pub domain: String,
+    pub enabled: bool,
+}
+
+impl GlossaryTerm {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "source": self.source,
+            "target": self.target,
+            "domain": self.domain,
+            "enabled": self.enabled,
+        })
+    }
+}
+
+/// Render `source -> target` constraints for a system prompt.
+///
+/// Kept free-standing (instead of a `Library` method) so `engine` can build the
+/// exact same sentence for the loopback-gateway fallback without touching a
+/// second connection.  `limit` bounds the prompt size; callers usually pass 24
+/// (AI turn) or 40 (whole-document fallback).
+pub fn glossary_system_segment(terms: &[(String, String)], limit: usize) -> String {
+    let picked: Vec<String> = terms
+        .iter()
+        .take(limit)
+        .map(|(source, target)| format!("{source} -> {target}"))
+        .collect();
+    if picked.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{GLOSSARY_MARKER}（保留英文或严格使用目标译名，不要意译）：{}。",
+        picked.join("；")
+    )
+}
+
 
 /// Effective translation-engine settings.
 ///
@@ -106,7 +175,7 @@ pub struct GatewayConfig {
 pub struct Library {
     pub(crate) sync: crate::sync::Manager,
     root: PathBuf,
-    _lock: fs::File,
+    _lock: Option<fs::File>,
     pub(crate) maintenance: Mutex<()>,
     translation_tx: std::sync::mpsc::SyncSender<(String,String,PathBuf,Option<String>,Option<String>)>,
     conn: Mutex<Connection>,
@@ -184,6 +253,38 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)", [name], |r| r.get::<_, bool>(0))?)
 }
 
+/// Remove leftover `<library>/tmp/job-*` working directories and staged
+/// `job-<id>.mono.pdf` outputs.
+///
+/// `run_translation` now cleans its own directory, but a hard crash, a killed
+/// process or an upgrade from an older build can leave one behind.  The
+/// single-instance lock guarantees no other process is using these files.
+fn sweep_orphan_translation_dirs(root: &Path) -> usize {
+    let mut removed = 0;
+    let Ok(entries) = fs::read_dir(root.join("tmp")) else { return 0 };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("job-") {
+            continue;
+        }
+        // The success path stages the engine PDF next to the run directory so
+        // the directory can be removed before the job is marked completed.
+        let swept = if path.is_dir() {
+            fs::remove_dir_all(&path).is_ok()
+        } else if path.is_file() && name.ends_with(".mono.pdf") {
+            fs::remove_file(&path).is_ok()
+        } else {
+            false
+        };
+        if swept {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 fn schema_version(conn: &Connection) -> Result<i64> {
     if !table_exists(conn, "schema_migrations")? { return Ok(0); }
     Ok(conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get::<_, Option<i64>>(0))?.unwrap_or(0))
@@ -198,6 +299,93 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
         conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition};"))?;
     }
     Ok(())
+}
+
+/// Parse a BabelDOC `--pages` selector into the 0-based source page indexes it
+/// actually translated.
+///
+/// Accepted shapes mirror what the reader's “仅翻译当前页/页码范围” UI sends:
+/// `"8"`, `"5-8"`, `"1-5, 8"` (whitespace and duplicates tolerated).  The
+/// returned list is sorted ascending and deduplicated, because BabelDOC emits
+/// the subset PDF in source order.  Anything unparseable, empty, or larger than
+/// [`MAX_PAGE_MAP`] returns `None`, which callers persist as `NULL`
+/// (= full translation / identity mapping) instead of failing the job.
+fn parse_pages_selector(raw: &str) -> Option<Vec<i64>> {
+    let mut pages = std::collections::BTreeSet::new();
+    let mut any = false;
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        any = true;
+        if let Some((start, end)) = part.split_once('-') {
+            let start = start.trim();
+            let end = end.trim();
+            // “-5” means 1..=5; an open-ended “5-” needs the document length,
+            // which is not part of a `jobs.pages` selector, so it is rejected.
+            if end.is_empty() {
+                return None;
+            }
+            let start: i64 = if start.is_empty() {
+                1
+            } else {
+                start.parse().ok()?
+            };
+            let end: i64 = end.parse().ok()?;
+            let (start, end) = (start.min(end), start.max(end));
+            // `checked_add` keeps a hostile selector such as `1-9223372036854775807`
+            // from overflowing into an effectively infinite loop.
+            let span = end.checked_sub(start).and_then(|span| span.checked_add(1));
+            if start < 1 || span.map_or(true, |span| span > MAX_PAGE_MAP) {
+                return None;
+            }
+            for page in start..=end {
+                pages.insert(page - 1);
+            }
+        } else {
+            let page: i64 = part.parse().ok()?;
+            if page < 1 {
+                return None;
+            }
+            pages.insert(page - 1);
+        }
+        if pages.len() as i64 > MAX_PAGE_MAP {
+            return None;
+        }
+    }
+    if !any || pages.is_empty() {
+        None
+    } else {
+        Some(pages.into_iter().collect())
+    }
+}
+
+/// Stored `versions.page_map` as a sorted 0-based source page list.
+///
+/// `None` means the version is a full translation (identity).  A malformed
+/// stored value is treated as `None` so a corrupt row can never make block
+/// writes fail.
+fn stored_page_map(raw: Option<&str>) -> Option<Vec<i64>> {
+    let map: Vec<i64> = serde_json::from_str(raw?).ok()?;
+    if map.is_empty() || map.iter().any(|page| *page < 0) {
+        None
+    } else {
+        Some(map)
+    }
+}
+
+/// `(kind, pages, page_map)` for one version, with the version owned by the paper.
+fn version_page_layout(conn: &Connection, paper_id: &str, version_id: &str) -> Result<(String, i64, Option<Vec<i64>>)> {
+    let row = conn
+        .query_row(
+            "SELECT kind,pages,page_map FROM versions WHERE id=? AND paper_id=?",
+            params![version_id, paper_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("version not found"))?;
+    Ok((row.0, row.1, stored_page_map(row.2.as_deref())))
 }
 
 /// Copy `library.db` to `<library>/backups/` before a schema upgrade, verify the
@@ -234,6 +422,50 @@ fn apply_migrations(conn: &Connection, from: i64) -> Result<()> {
         ensure_column(conn, "versions", "source_version_id", "TEXT")?;
         ensure_column(conn, "jobs", "source_version_id", "TEXT")?;
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_versions_source ON versions(source_version_id);")?;
+    }
+    if from < 3 {
+        // Cross-device reading position.  Nullable on purpose: a library that
+        // predates v3 has no resume point yet, and `NULL` is what the UI renders
+        // as "start at the beginning".  Re-running the migration (for instance
+        // after an interrupted upgrade) is a no-op thanks to `ensure_column`.
+        ensure_column(conn, "papers", "last_read_page", "INTEGER")?;
+        ensure_column(conn, "papers", "last_read_fraction", "REAL")?;
+        ensure_column(conn, "papers", "last_read_mode", "TEXT")?;
+        ensure_column(conn, "papers", "last_read_at", "INTEGER")?;
+    }
+    if from < 4 {
+        // Cached 1-page structured digest (§3.4.1).  Nullable: every existing
+        // paper simply reuses the no-cache path until a digest is generated.
+        ensure_column(conn, "papers", "digest_json", "TEXT")?;
+    }
+    if from < 5 {
+        // Small key/value store for app-level preferences that must survive a
+        // restart *and* be visible to the headless sidecar (LAN tablet bridge,
+        // quick explain, digest).  `chat_model` lives here so every transport
+        // resolves the same chat-only model without Electron settings.
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
+    }
+    if from < 6 {
+        // BUG-01: partial-page (`--pages`) translations produce a PDF that only
+        // contains the selected subset, so block and annotation page numbers
+        // need the real 0-based *source* page.  `page_map` is a JSON array such
+        // as `[7]` or `[4,5,6,7]`; `NULL` means a full translation and therefore
+        // the identity mapping `i -> i`.  Nullable on purpose: every existing
+        // version keeps its historical (full-document) behavior.
+        ensure_column(conn, "versions", "page_map", "TEXT")?;
+    }
+    if from < 7 {
+        // FEAT-UX-03: user terminology glossary.  The table is also part of
+        // `SCHEMA` (so a fresh library gets it before the first migration), but
+        // it is created here as well: an upgraded v6 file must gain it through
+        // the same migration path (and tests roll a real v6 fixture back).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS glossary_terms (
+               id TEXT PRIMARY KEY, source TEXT NOT NULL COLLATE NOCASE UNIQUE,
+               target TEXT NOT NULL, domain TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1
+             );
+             CREATE INDEX IF NOT EXISTS idx_glossary_enabled ON glossary_terms(enabled, source);",
+        )?;
     }
     Ok(())
 }
@@ -273,18 +505,24 @@ impl Library {
         lock.try_lock().map_err(|_|anyhow!("论文库已被另一个 Moonlight 进程使用"))?;
         let conn = Connection::open(root.join("library.db"))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Triggers use this scalar for CJK bigrams; every connection that may
+        // fire them must register it before the first write.
+        crate::search::register(&conn)?;
         initialize_schema(&conn, root)?;
         conn.execute_batch(crate::zotero_local::SCHEMA)?;
         crate::organization::initialize(&conn)?;
         crate::sync::initialize(&conn)?;
         crate::search::initialize(&conn)?;
         conn.execute("UPDATE jobs SET status='failed',error='应用上次异常退出，任务已中断；可重试',updated_at=? WHERE status NOT IN ('completed','failed','cancelled')",[now_ms()])?;
+        // BUG-06: `run_translation` cleans its own tmp/job-<id>, but a crash can
+        // orphan one.  With the single-instance lock held it is safe to sweep.
+        sweep_orphan_translation_dirs(root);
         conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_paper ON jobs(paper_id) WHERE status NOT IN ('completed','failed','cancelled'); CREATE INDEX IF NOT EXISTS idx_jobs_recent ON jobs(created_at DESC,id);")?;
         let (translation_tx,translation_rx)=std::sync::mpsc::sync_channel::<(String,String,PathBuf,Option<String>,Option<String>)>(32);
         let lib = Arc::new(Self {
             sync: crate::sync::Manager::default(),
             root: root.to_path_buf(),
-            _lock: lock,
+            _lock: Some(lock),
             maintenance: Mutex::new(()),
             translation_tx,
             conn: Mutex::new(conn),
@@ -302,6 +540,32 @@ impl Library {
         })?;
         lib.seed_categories()?;
         Ok(lib)
+    }
+
+    /// Read-only opener for `moonlight-core --mcp` so external IDE agents can
+    /// query an open library without contending on `.moonlight.lock` or running
+    /// desktop startup cleanups on `jobs` / `tmp/`.
+    pub fn open_for_mcp(root: &Path) -> Result<Arc<Self>> {
+        let db = root.join("library.db");
+        if !db.is_file() {
+            return Self::new(root);
+        }
+        let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        crate::search::register(&conn)?;
+        let (translation_tx, _) = std::sync::mpsc::sync_channel(1);
+        Ok(Arc::new(Self {
+            sync: crate::sync::Manager::default(),
+            root: root.to_path_buf(),
+            _lock: None,
+            maintenance: Mutex::new(()),
+            translation_tx,
+            conn: Mutex::new(conn),
+            emitter: Mutex::new(None),
+            gateway: Mutex::new(None),
+            gateway_config: Mutex::new(None),
+            cancels: Mutex::new(HashMap::new()),
+        }))
     }
 
     pub fn root(&self) -> &Path {
@@ -334,6 +598,162 @@ impl Library {
             }
         }
         Ok(())
+    }
+
+    // ---- app settings ---------------------------------------------------
+    /// Persist the chat-only model pick from 「设置 → AI 阅读助手」.
+    ///
+    /// Electron keeps its own `ai-settings.json`, but quick explain (highlight
+    /// bubble / context chips / region ask), the digest and the LAN tablet
+    /// bridge all call `explain` / `ai_digest` directly.  Storing the choice in
+    /// the library lets every transport resolve the same model.  An empty or
+    /// whitespace-only value clears the override.
+    pub fn set_chat_model(&self, model: &str) -> Result<Value> {
+        let model = model.trim();
+        anyhow::ensure!(model.chars().count() <= 200, "问答模型名称过长（最多 200 字）");
+        let conn = self.conn();
+        if model.is_empty() {
+            conn.execute("DELETE FROM app_settings WHERE key='chat_model'", [])?;
+            Ok(json!({"ok": true, "chat_model": Value::Null}))
+        } else {
+            conn.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES('chat_model',?)", [model])?;
+            Ok(json!({"ok": true, "chat_model": model}))
+        }
+    }
+
+    /// The persisted chat-only model, `None` when unset or cleared.
+    pub fn chat_model(&self) -> Option<String> {
+        self.conn()
+            .query_row("SELECT value FROM app_settings WHERE key='chat_model'", [], |r| r.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    // ---- glossary (FEAT-UX-03) -----------------------------------------
+    /// Read-only glossary rows for the LAN read pool / tests.
+    pub fn glossary_on(conn: &Connection) -> Result<Vec<GlossaryTerm>> {
+        let mut stmt = conn.prepare(
+            "SELECT source,target,domain,enabled FROM glossary_terms ORDER BY domain COLLATE NOCASE, source COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(GlossaryTerm {
+                source: r.get(0)?,
+                target: r.get(1)?,
+                domain: r.get(2)?,
+                enabled: r.get::<_, i64>(3)? != 0,
+            })
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    pub fn glossary_terms(&self) -> Result<Vec<GlossaryTerm>> {
+        Self::glossary_on(&self.conn())
+    }
+
+    /// `list_glossary` contract: `{terms:[{source,target,domain,enabled}]}`.
+    pub fn list_glossary(&self) -> Result<Value> {
+        let terms: Vec<Value> = self.glossary_terms()?.iter().map(GlossaryTerm::to_json).collect();
+        Ok(json!({ "terms": terms }))
+    }
+
+    /// Enabled `(source,target)` pairs in stable order, for the gateway and for
+    /// BabelDOC's glossary CSV.
+    pub fn enabled_glossary_pairs(&self) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .glossary_terms()?
+            .into_iter()
+            .filter(|term| term.enabled)
+            .map(|term| (term.source, term.target))
+            .collect())
+    }
+
+    /// Pick at most `limit` enabled terms for one AI turn.
+    ///
+    /// Terms that literally occur in `haystack` (question + evidence) win; the
+    /// remaining slots are filled with globally enabled terms so a short English
+    /// snippet still carries the table.  Returns `None` when the glossary is
+    /// empty, which keeps the historic prompt byte-identical.
+    pub fn glossary_prompt_for(&self, haystack: &str, limit: usize) -> Result<Option<String>> {
+        let mut terms = self
+            .glossary_terms()?
+            .into_iter()
+            .filter(|term| term.enabled)
+            .collect::<Vec<_>>();
+        if terms.is_empty() || limit == 0 {
+            return Ok(None);
+        }
+        let lower = haystack.to_lowercase();
+        terms.sort_by_key(|term| {
+            let hit = !term.source.is_empty() && lower.contains(&term.source.to_lowercase());
+            (!hit, term.source.to_lowercase())
+        });
+        let pairs: Vec<(String, String)> = terms
+            .into_iter()
+            .take(limit)
+            .map(|term| (term.source, term.target))
+            .collect();
+        let segment = glossary_system_segment(&pairs, limit);
+        Ok((!segment.is_empty()).then_some(segment))
+    }
+
+    /// Persist the whole glossary from `save_glossary` (`{terms:[…]}`).
+    ///
+    /// Trims every field, rejects an empty source/target, caps the table at
+    /// [`GLOSSARY_MAX_TERMS`], deduplicates case-insensitively (first wins) so a
+    /// double-clicked "add" row never fails the save, and then hot-updates the
+    /// live gateway state without restarting it.
+    pub fn save_glossary(&self, params: &Value) -> Result<Value> {
+        let raw = params
+            .get("terms")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("缺少术语表 terms"))?;
+        anyhow::ensure!(raw.len() <= GLOSSARY_MAX_TERMS, "术语表最多 {GLOSSARY_MAX_TERMS} 条");
+        let mut seen = HashSet::new();
+        let mut normalized: Vec<(String, String, String, i64)> = Vec::new();
+        for item in raw {
+            let source = item.get("source").and_then(Value::as_str).unwrap_or("").trim();
+            let target = item.get("target").and_then(Value::as_str).unwrap_or("").trim();
+            anyhow::ensure!(!source.is_empty(), "术语原文不能为空");
+            anyhow::ensure!(!target.is_empty(), "术语译文不能为空");
+            anyhow::ensure!(source.chars().count() <= 200, "术语原文最多 200 字");
+            anyhow::ensure!(target.chars().count() <= 300, "术语译文最多 300 字");
+            let domain = item.get("domain").and_then(Value::as_str).unwrap_or("").trim();
+            anyhow::ensure!(domain.chars().count() <= 100, "术语学科最多 100 字");
+            if !seen.insert(source.to_lowercase()) {
+                continue;
+            }
+            let enabled = i64::from(item.get("enabled").and_then(Value::as_bool).unwrap_or(true));
+            normalized.push((source.to_string(), target.to_string(), domain.to_string(), enabled));
+        }
+        {
+            let conn = self.conn();
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("DELETE FROM glossary_terms", [])?;
+            for (source, target, domain, enabled) in &normalized {
+                tx.execute(
+                    "INSERT INTO glossary_terms(id,source,target,domain,enabled) VALUES(?,?,?,?,?)",
+                    params![Uuid::new_v4().to_string(), source, target, domain, enabled],
+                )?;
+            }
+            tx.commit()?;
+        }
+        self.sync_gateway_glossary();
+        Ok(json!({ "ok": true, "count": normalized.len() }))
+    }
+
+    /// Push the enabled glossary into the live loopback gateway (hot update).
+    ///
+    /// Loads the DB first, then takes the gateway lock, so the lock order is
+    /// always `conn -> gateway` and cannot deadlock against request handlers.
+    fn sync_gateway_glossary(&self) {
+        if let Ok(pairs) = self.enabled_glossary_pairs() {
+            if let Some(gateway) = self.gateway.lock().unwrap().as_ref() {
+                gateway.set_glossary(pairs);
+            }
+        }
     }
 
     // ---- papers ---------------------------------------------------------
@@ -421,8 +841,9 @@ impl Library {
         Ok(())
     }
 
-    fn paper_json(&self, paper_id: &str) -> Result<Value> {
-        let conn = self.conn();
+    /// Build one paper payload. Takes a `&Connection` so the LAN read pool can
+    /// serve the same shape from a read-only snapshot instead of the writer.
+    fn paper_json(conn: &Connection, paper_id: &str) -> Result<Value> {
         let mut stmt = conn.prepare("SELECT * FROM papers WHERE id=?")?;
         let mut rows = stmt.query(params![paper_id])?;
         let row = rows.next()?.ok_or_else(|| anyhow!("paper not found"))?;
@@ -441,19 +862,32 @@ impl Library {
             "read_status": row.get::<_, String>("read_status")?,
             "deleted": row.get::<_, Option<i64>>("deleted_at")?.is_some(),
             "notes": row.get::<_, String>("notes")?,
+            // Always present, `null` until the paper is first opened, so the
+            // renderer can resume without a missing-key branch.
+            "last_read_page": row.get::<_, Option<i64>>("last_read_page")?,
+            "last_read_fraction": row.get::<_, Option<f64>>("last_read_fraction")?,
+            "last_read_mode": row.get::<_, Option<String>>("last_read_mode")?,
+            "last_read_at": row.get::<_, Option<i64>>("last_read_at")?,
+            // Cached 1-page digest (§3.4.1), already parsed so the renderer can
+            // render it without a second RPC.  `null` until it is generated.
+            "digest": row.get::<_, Option<String>>("digest_json")?.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
             "short_note":row.get::<_,String>("short_note")?,"citation_count":row.get::<_,Option<i64>>("citation_count")?,"citation_source":row.get::<_,Option<String>>("citation_source")?,"citation_updated_at":row.get::<_,Option<i64>>("citation_updated_at")?,"citation_url":row.get::<_,Option<String>>("citation_url")?,
         });
         drop(rows);
         drop(stmt);
 
         let versions: Vec<Value> = {
-            let mut stmt = conn.prepare("SELECT id,paper_id,kind,sha256,rel_path,pages,bytes,lang,engine,model,created_at FROM versions WHERE paper_id=? ORDER BY created_at")?;
+            let mut stmt = conn.prepare("SELECT id,paper_id,kind,sha256,rel_path,pages,bytes,lang,engine,model,created_at,source_version_id,page_map FROM versions WHERE paper_id=? ORDER BY created_at")?;
             let rows = stmt.query_map(params![paper_id], |r| {
                 Ok(json!({
                     "id": r.get::<_, String>(0)?, "paper_id": r.get::<_, String>(1)?, "kind": r.get::<_, String>(2)?,
                     "sha256": r.get::<_, String>(3)?, "rel_path": r.get::<_, String>(4)?, "pages": r.get::<_, i64>(5)?,
                     "bytes": r.get::<_, i64>(6)?, "lang": r.get::<_, String>(7)?, "engine": r.get::<_, Option<String>>(8)?,
-                    "model": r.get::<_, Option<String>>(9)?, "created_at": r.get::<_, i64>(10)?
+                    "model": r.get::<_, Option<String>>(9)?, "created_at": r.get::<_, i64>(10)?,
+                    "source_version_id": r.get::<_, Option<String>>(11)?,
+                    // BUG-01: `null` means a full translation (identity page
+                    // mapping); otherwise every entry is a 0-based SOURCE page.
+                    "page_map": r.get::<_, Option<String>>(12)?.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
                 }))
             })?;
             rows.filter_map(Result::ok).collect()
@@ -475,7 +909,43 @@ impl Library {
     }
 
     pub fn get_paper(&self, paper_id: &str) -> Result<Value> {
-        self.paper_json(paper_id)
+        Self::paper_json(&self.conn(), paper_id)
+    }
+
+    /// Read-only variant for the LAN HTTP read pool (no write mutex).
+    pub fn get_paper_on(conn: &Connection, paper_id: &str) -> Result<Value> {
+        Self::paper_json(conn, paper_id)
+    }
+
+    /// Cache a generated 1-page digest for `paper_id` (§3.4.1).
+    ///
+    /// The digest is a derived cache, not user-authored metadata: it never
+    /// touches `updated_at`, so generating one cannot reorder the library.
+    /// Only an object with a non-empty `markdown` field is accepted, which
+    /// keeps `paper_json`'s parse-and-return contract meaningful.
+    pub fn save_digest(&self, paper_id: &str, digest: &Value) -> Result<Value> {
+        anyhow::ensure!(digest.is_object(), "导读必须是 JSON 对象");
+        anyhow::ensure!(
+            digest["markdown"].as_str().map_or(false, |markdown| !markdown.trim().is_empty()),
+            "导读缺少 markdown 正文"
+        );
+        let stored = digest.to_string();
+        anyhow::ensure!(stored.len() <= 2 * 1024 * 1024, "导读过大（最多 2MB）");
+        let conn = self.conn();
+        let updated = conn.execute("UPDATE papers SET digest_json=? WHERE id=?", params![stored, paper_id])?;
+        anyhow::ensure!(updated > 0, "论文不存在");
+        Ok(json!({"ok": true}))
+    }
+
+    /// Read the cached digest as JSON, `None` when the paper has never been
+    /// digested (or an older cached value is no longer valid JSON).
+    pub fn digest_json(&self, paper_id: &str) -> Result<Option<Value>> {
+        let conn = self.conn();
+        let stored: Option<Option<String>> = conn
+            .query_row("SELECT digest_json FROM papers WHERE id=?", [paper_id], |r| r.get(0))
+            .optional()?;
+        let Some(stored) = stored else { anyhow::bail!("论文不存在") };
+        Ok(stored.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()))
     }
 
     pub fn list_papers(&self, query: &str, category: Option<&str>, tag: Option<&str>, trashed: bool, status: Option<&str>) -> Result<Vec<Value>> {
@@ -517,8 +987,7 @@ impl Library {
             .filter_map(Result::ok)
             .collect();
         drop(stmt);
-        drop(conn);
-        ids.iter().map(|id| self.paper_json(id)).collect()
+        ids.iter().map(|id| Self::paper_json(&conn, id)).collect()
     }
 
     pub fn update_paper(&self, paper_id: &str, fields: &Value) -> Result<Value> {
@@ -550,6 +1019,35 @@ impl Library {
             conn.execute(&format!("UPDATE papers SET {} WHERE id=?", sets.join(",")), refs.as_slice())?;
         }
         self.get_paper(paper_id)
+    }
+
+    /// Persist the cross-device reading position.
+    ///
+    /// Deliberately never touches `papers.updated_at`: turning a page must not
+    /// reshuffle the "recently edited" order or invalidate the edit dialog's
+    /// optimistic lock.  Out-of-range values are clamped instead of rejected —
+    /// a stale page index (or a twitchy swipe on a tablet) is not an error.
+    pub fn set_reading_position(&self, paper_id: &str, page: i64, fraction: f64, mode: &str) -> Result<Value> {
+        let mode = match mode {
+            "source" | "translated" | "dual" | "paper-code" => mode,
+            _ => "source",
+        };
+        let fraction = if fraction.is_finite() { fraction.clamp(0.0, 1.0) } else { 0.0 };
+        let conn = self.conn();
+        let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM papers WHERE id=?)", [paper_id], |r| r.get(0))?;
+        anyhow::ensure!(exists, "论文不存在");
+        // Unknown/zero-page versions must not squeeze the page to -1; a paper
+        // without any version only guarantees a non-negative page.
+        let pages: Option<i64> = conn.query_row("SELECT MAX(pages) FROM versions WHERE paper_id=? AND pages>0", [paper_id], |r| r.get(0))?;
+        let page = match pages {
+            Some(pages) => page.max(0).min(pages - 1),
+            None => page.max(0),
+        };
+        conn.execute(
+            "UPDATE papers SET last_read_page=?,last_read_fraction=?,last_read_mode=?,last_read_at=? WHERE id=?",
+            params![page, fraction, mode, now_ms(), paper_id],
+        )?;
+        Ok(json!({"ok": true}))
     }
 
     pub fn save_paper(&self,p:&Value)->Result<Value>{
@@ -730,16 +1228,20 @@ impl Library {
 
     // ---- taxonomy -------------------------------------------------------
     pub fn taxonomy(&self) -> Result<Value> {
-        let conn = self.conn();
+        Self::taxonomy_on(&self.conn())
+    }
+
+    /// Read-only taxonomy for the LAN read pool.
+    pub fn taxonomy_on(conn: &Connection) -> Result<Value> {
         let cats: Vec<Value> = {
-            let mut stmt = conn.prepare("SELECT id,name,color,parent_id FROM categories ORDER BY sort_order,name")?;
-            let mapped = stmt.query_map([], |r| Ok(json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "color": r.get::<_, Option<String>>(2)?,"parent_id":r.get::<_,Option<String>>(3)?})))?;
+            let mut stmt = conn.prepare("SELECT id,name,color,parent_id,(SELECT count(DISTINCT pc.paper_id) FROM paper_categories pc JOIN papers p ON p.id=pc.paper_id AND p.deleted_at IS NULL WHERE pc.category_id=categories.id) AS paper_count FROM categories ORDER BY sort_order,name")?;
+            let mapped = stmt.query_map([], |r| Ok(json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "color": r.get::<_, Option<String>>(2)?,"parent_id":r.get::<_,Option<String>>(3)?,"paper_count":r.get::<_,i64>(4)?})))?;
             let collected: Vec<Value> = mapped.filter_map(Result::ok).collect();
             collected
         };
         let tags: Vec<Value> = {
-            let mut stmt = conn.prepare("SELECT id,name,color FROM tags ORDER BY name")?;
-            let mapped = stmt.query_map([], |r| Ok(json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "color": r.get::<_, Option<String>>(2)?})))?;
+            let mut stmt = conn.prepare("SELECT id,name,color,(SELECT count(*) FROM paper_tags pt JOIN papers p ON p.id=pt.paper_id AND p.deleted_at IS NULL WHERE pt.tag_id=tags.id) AS paper_count FROM tags ORDER BY name")?;
+            let mapped = stmt.query_map([], |r| Ok(json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "color": r.get::<_, Option<String>>(2)?,"paper_count":r.get::<_,i64>(3)?})))?;
             let collected: Vec<Value> = mapped.filter_map(Result::ok).collect();
             collected
         };
@@ -794,7 +1296,11 @@ impl Library {
 
     // ---- annotations ----------------------------------------------------
     pub fn list_annotations(&self, paper_id: &str) -> Result<Vec<Value>> {
-        let conn = self.conn();
+        Self::list_annotations_on(&self.conn(), paper_id)
+    }
+
+    /// Read-only annotation list for the LAN read pool.
+    pub fn list_annotations_on(conn: &Connection, paper_id: &str) -> Result<Vec<Value>> {
         let mut stmt = conn.prepare("SELECT * FROM annotations WHERE paper_id=? ORDER BY page,created_at")?;
         let rows = stmt.query_map(params![paper_id], |r| {
             let rects = r.get::<_, String>("rects")?;
@@ -819,9 +1325,21 @@ impl Library {
             return Err(anyhow!("invalid annotation page or version kind"));
         }
         if let Some(version) = version_id {
-            let valid: bool = self.conn().query_row(
-                "SELECT EXISTS(SELECT 1 FROM versions WHERE id=? AND paper_id=? AND kind=? AND pages>?)",
-                params![version, paper_id, version_kind, page], |r| r.get(0))?;
+            let conn = self.conn();
+            // BUG-01: for a partial translation the renderer already resolves
+            // the highlighted text back to its 0-based SOURCE page and sends
+            // that page here.  Accept it only when that source page is really
+            // part of `page_map`, and store it unchanged; the old
+            // `versions.pages > page` check compares against the subset length
+            // and would reject every valid translated annotation.
+            let layout = version_page_layout(&conn, paper_id, version).ok();
+            let valid = match layout {
+                Some((kind, pages, page_map)) if kind == version_kind => match page_map {
+                    Some(map) if kind == "translated" => map.contains(&page),
+                    _ => pages > page,
+                },
+                _ => false,
+            };
             if !valid { return Err(anyhow!("annotation version does not belong to this paper/page")); }
         }
         let id = Uuid::new_v4().to_string();
@@ -861,12 +1379,16 @@ impl Library {
     // ---- export ---------------------------------------------------------
     pub fn export(&self, ids: Vec<String>, format: &str) -> Result<String> {
         let mut out = Vec::new();
-        for id in ids {
-            let paper = self.get_paper(&id)?;
-            if format == "ris" {
-                out.push(ris(&paper));
-            } else {
-                out.push(bibtex(&paper));
+        for (index, id) in ids.iter().enumerate() {
+            let paper = self.get_paper(id)?;
+            match format {
+                "ris" => out.push(ris(&paper)),
+                // FEAT-UX-04: the two citation styles Chinese/English papers
+                // actually paste into a manuscript.  `bibtex` stays the default
+                // so an unknown format never silently changes an existing flow.
+                "gbt7714" => out.push(gbt7714(index + 1, &paper)),
+                "apa" => out.push(apa(&paper)),
+                _ => out.push(bibtex(&paper)),
             }
         }
         Ok(out.join("\n\n"))
@@ -876,35 +1398,49 @@ impl Library {
     pub fn set_blocks(&self, paper_id: &str, version_id: &str, page: i64, blocks: Vec<Value>) -> Result<()> {
         anyhow::ensure!(blocks.len()<=10000,"too many text blocks on one page");
         anyhow::ensure!(blocks.iter().map(|b|b["text"].as_str().unwrap_or("").len()).sum::<usize>()<=2_000_000,"page text too large");
+        let conn = self.conn();
+        let (kind, pages, page_map) = version_page_layout(&conn, paper_id, version_id)?;
+        // BUG-01: a partial translation's PDF only contains the translated
+        // subset, so the renderer addresses its pages by subset index.  Store
+        // the real 0-based SOURCE page instead, which is what the dual-pane
+        // alignment, the text layer and annotations all share.  Full
+        // translations (`page_map IS NULL`) keep the historical identity path.
+        let stored_page = match page_map {
+            Some(map) if kind == "translated" => {
+                anyhow::ensure!(page >= 0 && (page as u64) < map.len() as u64, "page outside translated subset");
+                map[page as usize]
+            }
+            _ => {
+                anyhow::ensure!(page>=0&&page<pages,"page outside document");
+                page
+            }
+        };
         let prepared: Vec<(String,i64,String,String,String)> = blocks.iter().enumerate().filter_map(|(i,block)| {
             let text=block.get("text").and_then(Value::as_str).unwrap_or("").trim();
             if text.is_empty() { return None; }
             let bbox=block.get("bbox").cloned().unwrap_or(json!([]));
             let kind=if block["kind"]=="ocr"{"ocr"}else{"text"};
-            let id=format!("{:x}",Sha256::digest(format!("{version_id}:{page}:{i}:{bbox}:{text}:{kind}")));
+            let id=format!("{:x}",Sha256::digest(format!("{version_id}:{stored_page}:{i}:{bbox}:{text}:{kind}")));
             Some((id,i as i64,bbox.to_string(),text.to_string(),kind.into()))
         }).collect();
-        let conn = self.conn();
-        let pages:i64=conn.query_row("SELECT pages FROM versions WHERE id=? AND paper_id=?",params![version_id,paper_id],|r|r.get(0))?;
-        anyhow::ensure!(page>=0&&page<pages,"page outside document");
         if prepared.is_empty(){return Ok(());}
         // Revisiting a scanned page must not replace cached OCR with a tiny native header.
         if prepared.iter().all(|row|row.4=="text") {
-            let old:i64=conn.query_row("SELECT coalesce(sum(length(text)),0) FROM blocks WHERE paper_id=? AND version_id=? AND page=? AND kind='ocr'",params![paper_id,version_id,page],|r|r.get(0))?;
+            let old:i64=conn.query_row("SELECT coalesce(sum(length(text)),0) FROM blocks WHERE paper_id=? AND version_id=? AND page=? AND kind='ocr'",params![paper_id,version_id,stored_page],|r|r.get(0))?;
             if old>prepared.iter().map(|row|row.3.chars().count() as i64).sum::<i64>(){return Ok(());}
         }
         {
             let mut stmt=conn.prepare("SELECT id FROM blocks WHERE paper_id=? AND version_id=? AND page=? ORDER BY block_index")?;
-            let old=stmt.query_map(params![paper_id,version_id,page],|r|r.get::<_,String>(0))?
+            let old=stmt.query_map(params![paper_id,version_id,stored_page],|r|r.get::<_,String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             if old.iter().eq(prepared.iter().map(|row| &row.0)) { return Ok(()); }
         }
         let tx = conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM blocks WHERE paper_id=? AND version_id=? AND page=?", params![paper_id, version_id, page])?;
+        tx.execute("DELETE FROM blocks WHERE paper_id=? AND version_id=? AND page=?", params![paper_id, version_id, stored_page])?;
         for (id,i,bbox,text,kind) in prepared {
             tx.execute(
                 "INSERT INTO blocks(id,paper_id,version_id,page,block_index,kind,bbox,text) VALUES(?,?,?,?,?,?,?,?)",
-                params![id, paper_id, version_id, page, i, kind, bbox, text],
+                params![id, paper_id, version_id, stored_page, i, kind, bbox, text],
             )?;
         }
         tx.commit()?;
@@ -1093,13 +1629,24 @@ impl Library {
         let tmp=self.root.join("tmp").join(format!("{version_id}.pdf"));
         copy_with_retry(output,&tmp).with_context(|| format!("复制译文输出失败：{}", tmp.display()))?;
         fs::OpenOptions::new().read(true).write(true).open(&tmp).with_context(|| format!("打开临时译文失败：{}", tmp.display()))?.sync_all()?;
+        // Prefer the hot-reloaded gateway model over the process environment.
+        // Read it before taking the connection lock: the gateway mutex is
+        // independent here and is only held for the clone.
+        let model=self.gateway().map(|g|g.model).unwrap_or_else(||std::env::var("MOONLIGHT_MODEL").unwrap_or_default());
         let result=(||->Result<()>{
             let conn=self.conn();
             let tx=conn.unchecked_transaction()?;
             let available:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM papers p JOIN jobs j ON j.paper_id=p.id WHERE p.id=? AND p.deleted_at IS NULL AND j.id=? AND j.status NOT IN ('cancelling','cancelled','failed','completed'))",params![paper_id,job_id],|r|r.get(0))?;
             anyhow::ensure!(available,"cancelled");
+            // BUG-01: the job's `--pages` selector is the only record of which
+            // source pages this subset PDF covers.  Persist the expanded,
+            // sorted 0-based list so `set_blocks`/annotations can translate
+            // subset page indexes back to source pages.  `None` (no selector)
+            // stays NULL = full translation / identity mapping.
+            let selected: Option<String>=tx.query_row("SELECT pages FROM jobs WHERE id=? AND paper_id=?",params![job_id,paper_id],|r|r.get::<_,Option<String>>(0))?;
+            let page_map=selected.as_deref().and_then(parse_pages_selector).map(|map|serde_json::to_string(&map).unwrap_or_default());
             rename_with_retry(&tmp,&dest)?;
-            tx.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,engine,model,created_at,source_version_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",params![version_id,paper_id,"translated",sha,dest_rel,pages,bytes,"zh-CN","babeldoc",std::env::var("MOONLIGHT_MODEL").unwrap_or_default(),now_ms(),source_version_id])?;
+            tx.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,engine,model,created_at,source_version_id,page_map) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",params![version_id,paper_id,"translated",sha,dest_rel,pages,bytes,"zh-CN","babeldoc",model,now_ms(),source_version_id,page_map])?;
             tx.execute("UPDATE papers SET updated_at=? WHERE id=?",params![now_ms(),paper_id])?;
             tx.execute("UPDATE jobs SET status='completed',updated_at=?,output_version_id=?,error=NULL WHERE id=?",params![now_ms(),version_id,job_id])?;
             tx.commit()?;
@@ -1189,9 +1736,34 @@ impl Library {
             qps: env_qps(),
             babeldoc: std::env::var("MOONLIGHT_BABELDOC_BIN").unwrap_or_default(),
         };
-        let gateway = engine::start_gateway(upstream, model, key, self.root.join("model-usage.jsonl"))?;
+        self.apply_gateway(&config)?;
         *self.gateway_config.lock().unwrap() = Some(config);
-        *self.gateway.lock().unwrap() = Some(gateway);
+        // The glossary lives in SQLite, not in the credential config; a newly
+        // started listener must still answer BabelDOC with the saved terms.
+        self.sync_gateway_glossary();
+        Ok(())
+    }
+
+    /// Apply a configuration to the single live loopback listener.
+    ///
+    /// BUG-06: an existing gateway is updated in place, so its address and
+    /// token stay valid for the BabelDOC CLI already running and for open SSE
+    /// answers.  A fresh listener is bound only when none was started yet.
+    fn apply_gateway(&self, config: &GatewayConfig) -> Result<()> {
+        let mut guard = self.gateway.lock().unwrap();
+        match guard.as_mut() {
+            Some(gateway) => gateway.update(config.upstream.clone(), config.model.clone(), config.api_key.clone()),
+            None => {
+                let gateway = engine::start_gateway(
+                    config.upstream.clone(),
+                    config.model.clone(),
+                    config.api_key.clone(),
+                    self.root.join("model-usage.jsonl"),
+                )
+                .map_err(|err| anyhow!("模型网关启动失败：{err}"))?;
+                *guard = Some(gateway);
+            }
+        }
         Ok(())
     }
 
@@ -1203,21 +1775,37 @@ impl Library {
         self.gateway_config.lock().unwrap().clone()
     }
 
-    /// Rebuild the loopback gateway from a saved configuration (`reload_gateway`).
+    /// Register a cancellation flag for one streaming AI request.
     ///
-    /// The previous gateway keeps serving until the new one is bound, so a bad
-    /// address or a missing key leaves the running configuration untouched.
+    /// Keys are namespaced (`ai:<request_id>`) so they never collide with the
+    /// translation job ids kept in the same map.
+    pub fn begin_ai_request(&self, request_id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.cancels.lock().unwrap().insert(format!("ai:{request_id}"), Arc::clone(&flag));
+        flag
+    }
+
+    pub fn end_ai_request(&self, request_id: &str) {
+        self.cancels.lock().unwrap().remove(&format!("ai:{request_id}"));
+    }
+
+    /// Flip the flag of a running streaming answer; `false` means it already ended.
+    pub fn cancel_ai(&self, request_id: &str) -> bool {
+        let cancels = self.cancels.lock().unwrap();
+        match cancels.get(&format!("ai:{request_id}")) {
+            Some(flag) => { flag.store(true, Ordering::SeqCst); true }
+            None => false,
+        }
+    }
+
+    /// Hot-reload the loopback gateway from a saved configuration
+    /// (`reload_gateway`): same port, same token, only upstream/model/key swap.
     pub fn reload_gateway(&self, params: &Value) -> Result<Value> {
         let config = self.resolve_gateway_config(params)?;
-        let gateway = engine::start_gateway(
-            config.upstream.clone(),
-            config.model.clone(),
-            config.api_key.clone(),
-            self.root.join("model-usage.jsonl"),
-        )
-        .map_err(|err| anyhow!("模型网关重建失败：{err}"))?;
+        self.apply_gateway(&config)?;
         *self.gateway_config.lock().unwrap() = Some(config.clone());
-        *self.gateway.lock().unwrap() = Some(gateway);
+        // Hot-updating credentials must not drop the glossary constraint.
+        self.sync_gateway_glossary();
         Ok(json!({
             "ok": true,
             "model": config.model,
@@ -1287,8 +1875,7 @@ impl Library {
         };
         // An unsaved edit in the settings dialog is probed directly: testing a
         // connection must never replace the live gateway.
-        let target = Gateway { base_url: config.upstream, token: config.api_key, model: config.model };
-        Ok(engine::probe_gateway(&target, timeout))
+        Ok(engine::probe_url(&config.upstream, &config.api_key, &config.model, timeout))
     }
 
     /// Locate BabelDOC: saved path first, then MOONLIGHT_BABELDOC_BIN, then PATH.
@@ -1367,6 +1954,110 @@ fn ris(p: &Value) -> String {
     lines.join("\n")
 }
 
+/// Non-empty textual field of a paper payload.
+fn paper_text<'a>(paper: &'a Value, key: &str) -> Option<&'a str> {
+    paper[key].as_str().map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// Split the library's stored author string (`, ` / `; ` separated) into names.
+fn author_names(paper: &Value) -> Vec<String> {
+    paper_text(paper, "authors")
+        .map(|authors| {
+            authors
+                .split([',', ';'])
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Terminate a bibliography fragment with one sentence period.
+fn sentence(text: &str) -> String {
+    let text = text.trim();
+    if text.is_empty() || text.ends_with('.') || text.ends_with('?') || text.ends_with('!') || text.ends_with('。') || text.ends_with('？') || text.ends_with('！') {
+        text.to_string()
+    } else {
+        format!("{text}.")
+    }
+}
+
+/// GB/T 7714-2015 journal article (`[1] 作者. 题名[J/OL]. 刊名, 年份. DOI.`).
+///
+/// The record only stores a single author string, so the standard's
+/// "first three + 等/et al." abbreviation is not attempted: exporting every
+/// stored name is lossless and still a valid GB/T 7714 author list.
+fn gbt7714(index: usize, paper: &Value) -> String {
+    let title = paper_text(paper, "title").unwrap_or("Untitled");
+    let mut out = format!("[{index}] ");
+    let authors = author_names(paper);
+    if !authors.is_empty() {
+        out.push_str(&authors.join(", "));
+        out.push_str(". ");
+    }
+    out.push_str(title);
+    out.push_str("[J/OL]. ");
+    match (paper_text(paper, "venue"), paper_text(paper, "year")) {
+        (Some(venue), Some(year)) => out.push_str(&format!("{venue}, {year}. ")),
+        (Some(venue), None) => out.push_str(&format!("{venue}. ")),
+        (None, Some(year)) => out.push_str(&format!("{year}. ")),
+        (None, None) => {}
+    }
+    if let Some(doi) = paper_text(paper, "doi") {
+        // Store/emit the bare identifier; the DOI resolver prefix is optional
+        // in GB/T 7714 and a bare value stays copy-pasteable.
+        out.push_str(&format!("DOI: {}.", crate::citations::doi(doi)));
+    }
+    out.trim_end().to_string()
+}
+
+/// APA 7th author: `Lovelace, A.` / `Turing, A. M.`
+fn apa_author(name: &str) -> String {
+    let tokens: Vec<&str> = name.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return name.trim().to_string();
+    }
+    let surname = tokens[tokens.len() - 1];
+    let initials = tokens[..tokens.len() - 1]
+        .iter()
+        .filter_map(|token| token.chars().next())
+        .map(|first| format!("{}.", first.to_ascii_uppercase()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{surname}, {initials}")
+}
+
+fn apa_authors(paper: &Value) -> String {
+    let names: Vec<String> = author_names(paper).iter().map(|name| apa_author(name)).collect();
+    match names.len() {
+        0 => String::new(),
+        1 => names[0].clone(),
+        2 => format!("{}, & {}", names[0], names[1]),
+        _ => format!("{}, & {}", names[..names.len() - 1].join(", "), names[names.len() - 1]),
+    }
+}
+
+/// APA 7th reference: `Authors (Year). Title. Venue. https://doi.org/…`
+fn apa(paper: &Value) -> String {
+    let authors = apa_authors(paper);
+    let mut out = String::new();
+    if !authors.is_empty() {
+        out.push_str(&authors);
+        out.push(' ');
+    }
+    out.push_str(&format!("({}). ", paper_text(paper, "year").unwrap_or("n.d.")));
+    out.push_str(&sentence(paper_text(paper, "title").unwrap_or("Untitled")));
+    if let Some(venue) = paper_text(paper, "venue") {
+        out.push(' ');
+        out.push_str(&sentence(venue));
+    }
+    if let Some(doi) = paper_text(paper, "doi") {
+        out.push_str(&format!(" https://doi.org/{}.", crate::citations::doi(doi)));
+    }
+    out
+}
+
 #[cfg(test)]
 mod gateway_tests {
     use super::*;
@@ -1441,7 +2132,7 @@ mod gateway_tests {
     }
 
     #[test]
-    fn reload_gateway_rebuilds_the_gateway_and_chat_uses_the_new_upstream() {
+    fn reload_gateway_reuses_the_listener_and_swaps_the_upstream_in_place() {
         let (lib, root) = temp_library();
         let first = fake_upstream(200, "first", Duration::ZERO);
         let saved = lib
@@ -1456,6 +2147,7 @@ mod gateway_tests {
         assert!(gateway.base_url.ends_with("/v1"), "{}", gateway.base_url);
         assert_eq!(gateway.model, "academic-test");
         let first_gateway_url = gateway.base_url.clone();
+        let first_gateway_token = gateway.token.clone();
         assert_eq!(
             engine::chat(&gateway, vec![json!({"role": "user", "content": "ping"})], 0.0).unwrap(),
             "first"
@@ -1468,18 +2160,31 @@ mod gateway_tests {
             assert_eq!(seen[0].body["model"], json!("academic-test"));
         }
 
-        // A second save swaps the live gateway again: no restart, no stale host.
+        // BUG-06: a second save is a hot reload.  The listener, its loopback
+        // address and the token BabelDOC was started with must survive; only
+        // upstream/model/key are swapped.  A client clone taken before the
+        // reload keeps working against the same port.
         let second = fake_upstream(200, "second", Duration::ZERO);
         lib.reload_gateway(&json!({"base_url": second.base_url, "model": "academic-v2", "api_key": "second-key", "qps": 5}))
             .unwrap();
+        assert_eq!(
+            engine::chat(&gateway, vec![json!({"role": "user", "content": "ping"})], 0.0).unwrap(),
+            "second",
+            "the pre-reload client must keep using the same live listener"
+        );
         let gateway = lib.gateway().unwrap();
-        assert_ne!(gateway.base_url, first_gateway_url, "重新加载后必须换成新的本地网关");
+        assert_eq!(gateway.base_url, first_gateway_url, "热更新必须复用同一个本地监听端口");
+        assert_eq!(gateway.token, first_gateway_token, "热更新不得轮换网关 token（否则进行中的翻译会 401）");
         assert_eq!(gateway.model, "academic-v2");
         assert_eq!(
             engine::chat(&gateway, vec![json!({"role": "user", "content": "ping"})], 0.0).unwrap(),
             "second"
         );
-        assert_eq!(second.seen.lock().unwrap()[0].auth, "Bearer second-key");
+        let seen = second.seen.lock().unwrap();
+        assert_eq!(seen.last().unwrap().auth, "Bearer second-key");
+        assert_eq!(seen.last().unwrap().body["model"], json!("academic-v2"), "新请求必须使用新模型");
+        assert_eq!(seen[0].body["model"], json!("academic-test"), "旧 clone 的 per-request override 仍应优先");
+        drop(seen);
         let (qps, _) = lib.translation_engine_options();
         assert_eq!(qps, 5);
         drop(lib);
@@ -1690,6 +2395,208 @@ mod gateway_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn paper_json_exposes_the_source_version_binding() {
+        let (lib, root) = temp_library();
+        let paper_id = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES(?,?,?,?,?)",
+            params![paper_id, "Binding", "A", now_ms(), now_ms()],
+        ).unwrap();
+        let source_id = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            params![source_id, paper_id, "source", "sha-source", "files/source.pdf", 2i64, 42i64, "en", now_ms()],
+        ).unwrap();
+        let translated_id = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,engine,model,created_at,source_version_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            params![translated_id, paper_id, "translated", "sha-translated", "derived/translated.pdf", 2i64, 43i64, "zh-CN", "babeldoc", "test-model", now_ms(), source_id],
+        ).unwrap();
+        let paper = lib.get_paper(&paper_id).unwrap();
+        let versions = paper["versions"].as_array().unwrap();
+        let translated = versions.iter().find(|version| version["id"].as_str() == Some(translated_id.as_str())).expect("translated version must be listed");
+        assert_eq!(translated["source_version_id"].as_str(), Some(source_id.as_str()));
+        let source = versions.iter().find(|version| version["id"].as_str() == Some(source_id.as_str())).unwrap();
+        assert!(source["source_version_id"].is_null(), "source versions carry no parent binding");
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn page_map_parses_page_selectors_into_sorted_zero_based_indexes() {
+        assert_eq!(parse_pages_selector("8"), Some(vec![7]));
+        assert_eq!(parse_pages_selector("5-8"), Some(vec![4, 5, 6, 7]));
+        assert_eq!(parse_pages_selector("1-5, 8"), Some(vec![0, 1, 2, 3, 4, 7]));
+        assert_eq!(parse_pages_selector(" 8, 5-6, 6 "), Some(vec![4, 5, 7]), "duplicates and whitespace collapse");
+        assert_eq!(parse_pages_selector("8-5"), Some(vec![4, 5, 6, 7]), "a reversed range keeps every page");
+        assert_eq!(parse_pages_selector("-4"), Some(vec![0, 1, 2, 3]), "a leading dash means from page 1");
+        for invalid in ["", "   ", "abc", "0", "1-", "1-0", "1-99999999", "1-9223372036854775807", "1, nope"] {
+            assert_eq!(parse_pages_selector(invalid), None, "{invalid:?} must fall back to identity");
+        }
+    }
+
+    #[test]
+    fn partial_translation_stores_the_page_map_and_maps_blocks_and_annotations() {
+        let (lib, root) = temp_library();
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("../samples/generated/narrow-column.pdf");
+        let paper_id = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES(?,?,?,?,?)",
+            params![paper_id, "Partial", "", now_ms(), now_ms()],
+        ).unwrap();
+        let source_id = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,created_at) VALUES(?,?,'source','sha-source','files/source.pdf',10,1,'en',?)",
+            params![source_id, paper_id, now_ms()],
+        ).unwrap();
+        let attach = |pages: Option<&str>| {
+            let job_id = Uuid::new_v4().to_string();
+            lib.conn().execute(
+                "INSERT INTO jobs(id,paper_id,status,pages,created_at,updated_at) VALUES(?,?,'translating',?,?,?)",
+                params![job_id, paper_id, pages, now_ms(), now_ms()],
+            ).unwrap();
+            let output = root.join(format!("subset-{job_id}.pdf"));
+            fs::copy(&sample, &output).unwrap();
+            let version_id = lib.attach_translation(&paper_id, &output, &job_id, None).unwrap();
+            (job_id, version_id)
+        };
+        // BUG-01: `--pages 8` produced a one-page subset covering 0-based source page 7.
+        let (_, translated_id) = attach(Some("8"));
+        let paper = lib.get_paper(&paper_id).unwrap();
+        let versions = paper["versions"].as_array().unwrap();
+        let translated = versions.iter().find(|v| v["id"].as_str() == Some(translated_id.as_str())).unwrap();
+        assert_eq!(translated["page_map"], json!([7]), "the subset's only page maps to source page 7");
+        assert_eq!(translated["pages"], json!(1), "the stored PDF is the translated subset");
+        let source = versions.iter().find(|v| v["id"].as_str() == Some(source_id.as_str())).unwrap();
+        assert!(source["page_map"].is_null(), "source versions carry no page map");
+
+        // The renderer addresses the subset page 0; the backend stores source page 7.
+        lib.set_blocks(&paper_id, &translated_id, 0, vec![json!({"text":"译文正文","bbox":[1,1,10,10]})]).unwrap();
+        assert_eq!(lib.blocks(&paper_id, &translated_id, 7).unwrap().len(), 1, "blocks land on the source page");
+        assert!(lib.blocks(&paper_id, &translated_id, 0).unwrap().is_empty());
+        assert!(lib.set_blocks(&paper_id, &translated_id, 1, vec![json!({"text":"越界"})]).is_err());
+
+        // Translated annotations arrive with the 0-based SOURCE page and must be
+        // accepted only when that page is in the page map.
+        lib.add_annotation(&paper_id, 7, json!([]), "引文", "yellow", "", "translated", Some(&translated_id)).unwrap();
+        assert!(lib.add_annotation(&paper_id, 0, json!([]), "错页", "yellow", "", "translated", Some(&translated_id)).is_err());
+
+        // A full translation (no `--pages`) is byte-compatible with the old path:
+        // page_map NULL, subset index == source page, old bounds check still applies.
+        let (_, full_id) = attach(None);
+        let paper = lib.get_paper(&paper_id).unwrap();
+        let full = paper["versions"].as_array().unwrap().iter().find(|v| v["id"].as_str() == Some(full_id.as_str())).unwrap();
+        assert!(full["page_map"].is_null(), "full translations keep the identity mapping");
+        lib.set_blocks(&paper_id, &full_id, 0, vec![json!({"text":"全文译文","bbox":[1,1,10,10]})]).unwrap();
+        assert_eq!(lib.blocks(&paper_id, &full_id, 0).unwrap().len(), 1);
+        assert!(lib.set_blocks(&paper_id, &full_id, 1, vec![json!({"text":"越界"})]).is_err());
+        lib.add_annotation(&paper_id, 0, json!([]), "全文批注", "yellow", "", "translated", Some(&full_id)).unwrap();
+        assert!(lib.add_annotation(&paper_id, 1, json!([]), "越界", "yellow", "", "translated", Some(&full_id)).is_err());
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_upgrade_adds_the_page_map_column() {
+        let root = std::env::temp_dir().join(format!("moonlight-schema-v6-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        {
+            let conn = Connection::open(root.join("library.db")).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute("INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES('v5-paper','V5 Paper','A',3,3)", []).unwrap();
+            conn.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,created_at) VALUES('v5-version','v5-paper','source','x','files/x.pdf',1,1,1)", []).unwrap();
+            // Roll the fixture back to a genuine v5 file.
+            conn.execute_batch("ALTER TABLE versions DROP COLUMN page_map; DELETE FROM schema_migrations WHERE version>=6;").unwrap();
+            assert!(!column_exists(&conn, "versions", "page_map").unwrap(), "fixture must start at v5");
+        }
+        let lib = Library::new(&root).unwrap();
+        assert!(column_exists(&lib.conn(), "versions", "page_map").unwrap(), "v6 upgrade must add page_map");
+        let version: i64 = lib.conn().query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let page_map: Option<String> = lib.conn().query_row("SELECT page_map FROM versions WHERE id='v5-version'", [], |r| r.get(0)).unwrap();
+        assert!(page_map.is_none(), "existing versions stay full translations");
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_sweeps_orphan_translation_directories_only() {
+        let root = std::env::temp_dir().join(format!("moonlight-sweep-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("tmp/job-orphan/nested")).unwrap();
+        fs::write(root.join("tmp/job-orphan/nested/result.mono.pdf"), b"pdf").unwrap();
+        fs::write(root.join("tmp/job-staged.mono.pdf"), b"pdf").unwrap();
+        fs::write(root.join("tmp/keep.pdf"), b"keep").unwrap();
+        fs::write(root.join("tmp/job-not-a-dir"), b"keep").unwrap();
+        let lib = Library::new(&root).unwrap();
+        assert!(!root.join("tmp/job-orphan").exists(), "orphan job dirs must be swept on startup");
+        assert!(!root.join("tmp/job-staged.mono.pdf").exists(), "a staged engine PDF is swept too");
+        assert!(root.join("tmp/keep.pdf").exists(), "unrelated temp files are untouched");
+        assert!(root.join("tmp/job-not-a-dir").exists(), "only directories and staged PDFs are swept");
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn paper_json_returns_the_stored_digest_and_null_without_one() {
+        let (lib, root) = temp_library();
+        let paper_id = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES(?,?,?,?,?)",
+            params![paper_id, "Digest", "A", now_ms(), 7i64],
+        ).unwrap();
+        assert!(lib.get_paper(&paper_id).unwrap()["digest"].is_null(), "no digest yet");
+        assert!(lib.digest_json(&paper_id).unwrap().is_none());
+        let digest = json!({
+            "markdown": "## ① 研究痛点\n缓存导读。\n\n## ② 核心方法\n[p.2] 检索增强。",
+            "generated_at": 1234i64,
+            "model": "test-model",
+            "version_id": "v1",
+        });
+        assert_eq!(lib.save_digest(&paper_id, &digest).unwrap(), json!({"ok": true}));
+        assert_eq!(lib.digest_json(&paper_id).unwrap(), Some(digest.clone()));
+        let paper = lib.get_paper(&paper_id).unwrap();
+        assert_eq!(paper["digest"], digest, "paper_json must parse the cached digest object");
+        assert_eq!(paper["updated_at"], json!(7), "digest caching must not touch updated_at");
+        // The cached value is validation-guarded so the renderer never gets a
+        // half-written digest back as a plain string.
+        assert!(lib.save_digest("missing-paper", &digest).is_err());
+        assert!(lib.save_digest(&paper_id, &json!({"markdown": "   "})).is_err());
+        assert!(lib.save_digest(&paper_id, &json!("not an object")).is_err());
+        // Replacing the digest is an update, not a duplicate insert.
+        let replacement = json!({"markdown": "新版导读", "generated_at": 5678i64, "model": "test-model"});
+        lib.save_digest(&paper_id, &replacement).unwrap();
+        assert_eq!(lib.get_paper(&paper_id).unwrap()["digest"], replacement);
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_upgrade_from_v3_adds_the_digest_column() {
+        let root = std::env::temp_dir().join(format!("moonlight-schema-v4-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        {
+            let conn = Connection::open(root.join("library.db")).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute("INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES('v3-paper','V3 Paper','A',9,9)", []).unwrap();
+            // Roll the fixture back to a genuine v3 file.
+            conn.execute_batch("ALTER TABLE papers DROP COLUMN digest_json; DELETE FROM schema_migrations WHERE version>=4;").unwrap();
+            assert!(!column_exists(&conn, "papers", "digest_json").unwrap(), "fixture must start at v3");
+        }
+        let lib = Library::new(&root).unwrap();
+        assert!(column_exists(&lib.conn(), "papers", "digest_json").unwrap(), "v4 upgrade must add digest_json");
+        let version: i64 = lib.conn().query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(lib.digest_json("v3-paper").unwrap().is_none(), "an upgraded paper starts without a digest");
+        lib.save_digest("v3-paper", &json!({"markdown":"升级后可写缓存","generated_at":1i64,"model":"m"})).unwrap();
+        assert_eq!(lib.digest_json("v3-paper").unwrap().unwrap()["markdown"], json!("升级后可写缓存"));
+        drop(lib);
+        let backups: Vec<PathBuf> = fs::read_dir(root.join("backups")).unwrap().filter_map(|entry| entry.ok().map(|item| item.path())).collect();
+        assert_eq!(backups.len(), 1, "升级前应生成一份快照");
+        drop(Connection::open(&backups[0]).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn supplementary_translation_runs_end_to_end_and_binds_the_output() {
@@ -1719,12 +2626,132 @@ mod gateway_tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(status, "completed", "job did not complete");
+        assert!(!root.join("tmp").join(format!("job-{job_id}")).exists(), "BUG-06: a successful run must clean its tmp/job-* directory");
         let (bound, source): (Option<String>, Option<String>) = lib.conn().query_row(
             "SELECT source_version_id, (SELECT source_version_id FROM jobs WHERE id=?) FROM versions WHERE paper_id=? AND kind='translated' ORDER BY created_at DESC LIMIT 1",
             params![job_id, paper_id], |r| Ok((r.get(0)?, r.get(1)?)),
         ).unwrap();
         assert_eq!(bound.as_deref(), Some(supplement_id.as_str()));
         assert_eq!(source.as_deref(), Some(supplement_id.as_str()));
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_upgrade_from_v2_adds_reading_position_columns() {
+        let root = std::env::temp_dir().join(format!("moonlight-schema-v3-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        {
+            let conn = Connection::open(root.join("library.db")).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute("INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES('v2-paper','V2 Paper','A',7,7)", []).unwrap();
+            // Roll the fixture back to a genuine v2 file: the four reading
+            // columns and the v4 digest column are gone and the highest applied
+            // migration is 2.
+            conn.execute_batch(
+                "ALTER TABLE papers DROP COLUMN last_read_page;
+                 ALTER TABLE papers DROP COLUMN last_read_fraction;
+                 ALTER TABLE papers DROP COLUMN last_read_mode;
+                 ALTER TABLE papers DROP COLUMN last_read_at;
+                 ALTER TABLE papers DROP COLUMN digest_json;
+                 DELETE FROM schema_migrations WHERE version>=3;",
+            )
+            .unwrap();
+            assert!(!column_exists(&conn, "papers", "last_read_page").unwrap(), "fixture must start at v2");
+        }
+        let lib = Library::new(&root).unwrap();
+        for column in ["last_read_page", "last_read_fraction", "last_read_mode", "last_read_at", "digest_json"] {
+            assert!(column_exists(&lib.conn(), "papers", column).unwrap(), "v3/v4 upgrade must add {column}");
+        }
+        let version: i64 = lib.conn().query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let (title, updated): (String, i64) = lib
+            .conn()
+            .query_row("SELECT title,updated_at FROM papers WHERE id='v2-paper'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((title.as_str(), updated), ("V2 Paper", 7), "migration must keep existing rows");
+        let resume: Option<i64> = lib.conn().query_row("SELECT last_read_page FROM papers WHERE id='v2-paper'", [], |r| r.get(0)).unwrap();
+        assert!(resume.is_none(), "an upgraded paper starts without a resume point");
+        drop(lib);
+        let backups: Vec<PathBuf> = fs::read_dir(root.join("backups")).unwrap().filter_map(|entry| entry.ok().map(|item| item.path())).collect();
+        assert_eq!(backups.len(), 1, "升级前应生成一份快照");
+        let snapshot = Connection::open(&backups[0]).unwrap();
+        assert!(!column_exists(&snapshot, "papers", "last_read_page").unwrap(), "快照必须保持升级前的 v2 结构");
+        assert_eq!(snapshot.query_row("SELECT title FROM papers WHERE id='v2-paper'", [], |r| r.get::<_, String>(0)).unwrap(), "V2 Paper");
+        drop(snapshot);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reading_position_clamps_and_keeps_updated_at() {
+        let (lib, root) = temp_library();
+        let paper_id = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES(?,?,?,?,?)",
+            params![paper_id, "Reading", "A", now_ms(), 1234i64],
+        ).unwrap();
+        lib.conn().execute(
+            "INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,lang,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            params![Uuid::new_v4().to_string(), paper_id, "source", "sha-reading", "files/reading.pdf", 12i64, 1i64, "en", now_ms()],
+        ).unwrap();
+
+        assert_eq!(lib.set_reading_position(&paper_id, 99, 1.8, "dual").unwrap(), json!({"ok": true}));
+        let paper = lib.get_paper(&paper_id).unwrap();
+        assert_eq!(paper["last_read_page"], json!(11), "page must clamp to pages-1");
+        assert_eq!(paper["last_read_fraction"], json!(1.0), "fraction must clamp to 1");
+        assert_eq!(paper["last_read_mode"], json!("dual"));
+        assert!(paper["last_read_at"].as_i64().unwrap() > 0, "last_read_at must be stamped: {paper}");
+        assert_eq!(paper["updated_at"], json!(1234), "阅读进度不得改动 updated_at");
+
+        lib.set_reading_position(&paper_id, -5, -0.4, "bogus-mode").unwrap();
+        let paper = lib.get_paper(&paper_id).unwrap();
+        assert_eq!(paper["last_read_page"], json!(0), "negative page clamps to 0");
+        assert_eq!(paper["last_read_fraction"], json!(0.0), "fraction must clamp to 0");
+        assert_eq!(paper["last_read_mode"], json!("source"), "unknown modes fall back to source");
+        let stored_updated: i64 = lib.conn().query_row("SELECT updated_at FROM papers WHERE id=?", [&paper_id], |r| r.get(0)).unwrap();
+        assert_eq!(stored_updated, 1234, "the SQL row's updated_at must also stay untouched");
+
+        // No version at all: the page only has to stay non-negative.
+        let versionless = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES(?,?,?,?,?)",
+            params![versionless, "No PDF", "A", now_ms(), 7i64],
+        ).unwrap();
+        lib.set_reading_position(&versionless, -2, 0.5, "paper-code").unwrap();
+        let versionless_paper = lib.get_paper(&versionless).unwrap();
+        assert_eq!(versionless_paper["last_read_page"], json!(0));
+        assert_eq!(versionless_paper["last_read_mode"], json!("paper-code"));
+
+        let error = lib.set_reading_position("no-such-paper", 0, 0.0, "source").err().expect("missing paper must error").to_string();
+        assert!(error.contains("论文不存在"), "{error}");
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_export_and_upsert_carry_the_reading_position() {
+        let (lib, root) = temp_library();
+        let paper_id = Uuid::new_v4().to_string();
+        lib.conn().execute(
+            "INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES(?,?,?,?,?)",
+            params![paper_id, "Synced", "A", now_ms(), now_ms()],
+        ).unwrap();
+        lib.set_reading_position(&paper_id, 3, 0.25, "translated").unwrap();
+        let documents = crate::sync_model::export(&lib.conn()).unwrap();
+        let key = format!("paper:{paper_id}");
+        let doc = &documents[&key];
+        // `export` selects `*`, so the new columns travel without touching sync_model.
+        assert_eq!(doc["paper"]["last_read_page"], json!(3));
+        assert_eq!(doc["paper"]["last_read_fraction"], json!(0.25));
+        assert_eq!(doc["paper"]["last_read_mode"], json!("translated"));
+        assert!(doc["paper"]["last_read_at"].as_i64().unwrap() > 0);
+        crate::sync_model::validate(&key, doc).unwrap();
+        // The upsert whitelist is PRAGMA table_info, so applying our own doc must
+        // accept (not reject) the v3 columns.
+        crate::sync_model::apply(&lib.conn(), &key, doc).unwrap();
+        let applied = lib.get_paper(&paper_id).unwrap();
+        assert_eq!(applied["last_read_fraction"], json!(0.25));
+        assert_eq!(applied["last_read_mode"], json!("translated"));
         drop(lib);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1742,6 +2769,76 @@ mod gateway_tests {
     }
 
     #[test]
+    fn ai_cancellation_flags_are_registered_flipped_and_released() {
+        let root = std::env::temp_dir().join(format!("moonlight-ai-cancel-{}", Uuid::new_v4()));
+        let lib = Library::new(&root).unwrap();
+        // Unknown ids are a no-op so a late cancel cannot error the UI.
+        assert!(!lib.cancel_ai("never-started"));
+        let flag = lib.begin_ai_request("turn-1");
+        assert!(!flag.load(Ordering::SeqCst), "a fresh request must not start cancelled");
+        assert!(lib.cancel_ai("turn-1"));
+        assert!(flag.load(Ordering::SeqCst), "cancel must flip the flag the stream polls");
+        // The translation-job cancel table shares the map; namespacing keeps them apart.
+        assert!(!lib.cancel_ai("ai:turn-1"));
+        lib.end_ai_request("turn-1");
+        assert!(!lib.cancel_ai("turn-1"), "a finished request is no longer cancellable");
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_model_persists_trims_and_clears() {
+        let (lib, root) = temp_library();
+        assert_eq!(lib.chat_model(), None, "a fresh library has no chat model");
+        let saved = lib.set_chat_model("  reasoner-v2  ").unwrap();
+        assert_eq!(saved, json!({"ok": true, "chat_model": "reasoner-v2"}), "the saved value is trimmed");
+        assert_eq!(lib.chat_model().as_deref(), Some("reasoner-v2"));
+        let stored: String = lib.conn().query_row("SELECT value FROM app_settings WHERE key='chat_model'", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, "reasoner-v2", "the model lives in the library, not only in memory");
+        drop(lib);
+
+        // Reopening the library (the LAN tablet bridge runs in the same process,
+        // but a restart must also keep the pick) still sees it.
+        let reopened = Library::new(&root).unwrap();
+        assert_eq!(reopened.chat_model().as_deref(), Some("reasoner-v2"));
+        let cleared = reopened.set_chat_model("   ").unwrap();
+        assert_eq!(cleared, json!({"ok": true, "chat_model": null}), "whitespace clears the override");
+        assert_eq!(reopened.chat_model(), None);
+        let rows: i64 = reopened.conn().query_row("SELECT COUNT(*) FROM app_settings WHERE key='chat_model'", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 0, "clearing deletes the row instead of storing an empty value");
+        let too_long = "m".repeat(201);
+        assert!(reopened.set_chat_model(&too_long).is_err(), "a model name is capped at 200 characters");
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_upgrade_from_v4_adds_app_settings() {
+        let root = std::env::temp_dir().join(format!("moonlight-schema-v5-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        {
+            let conn = Connection::open(root.join("library.db")).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch("DROP TABLE app_settings; DELETE FROM schema_migrations WHERE version>=5;").unwrap();
+            assert!(!table_exists(&conn, "app_settings").unwrap(), "fixture must start at v4");
+            // The migration itself must recreate the store on a v4 file.
+            apply_migrations(&conn, 4).unwrap();
+            assert!(table_exists(&conn, "app_settings").unwrap(), "v5 migration must add app_settings");
+        }
+        let lib = Library::new(&root).unwrap();
+        let version: i64 = lib.conn().query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        lib.set_chat_model("migrated-model").unwrap();
+        drop(lib);
+        let reopened = Library::new(&root).unwrap();
+        assert_eq!(reopened.chat_model().as_deref(), Some("migrated-model"));
+        drop(reopened);
+        let backups: Vec<PathBuf> = fs::read_dir(root.join("backups")).unwrap().filter_map(|entry| entry.ok().map(|item| item.path())).collect();
+        assert_eq!(backups.len(), 1, "升级前应生成一份快照");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn newer_schema_is_rejected_instead_of_downgraded() {
         let root = std::env::temp_dir().join(format!("moonlight-newer-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -1752,6 +2849,210 @@ mod gateway_tests {
         }
         let error = Library::new(&root).err().expect("newer schema must be rejected").to_string();
         assert!(error.contains("更新版本"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // ---- FEAT-UX-03 glossary -------------------------------------------
+
+    #[test]
+    fn glossary_round_trips_trims_and_deduplicates_case_insensitively() {
+        let root = std::env::temp_dir().join(format!("moonlight-glossary-{}", Uuid::new_v4()));
+        let lib = Library::new(&root).unwrap();
+        assert_eq!(lib.list_glossary().unwrap(), json!({"terms": []}));
+
+        let saved = lib.save_glossary(&json!({"terms":[
+            {"source":"  Attention ","target":" 注意力 ","domain":" AI ","enabled":true},
+            {"source":"attention","target":"重复词条","domain":"","enabled":true},
+            {"source":"Rollout","target":"轨迹采样","domain":"RL"},
+            {"source":"Legacy","target":"旧术语","enabled":false}
+        ]})).unwrap();
+        assert_eq!(saved, json!({"ok":true,"count":3}), "case-insensitive duplicate collapses");
+
+        let listed = lib.list_glossary().unwrap();
+        let terms = listed["terms"].as_array().unwrap();
+        assert_eq!(terms.len(), 3);
+        let attention = terms.iter().find(|term| term["source"]=="Attention").unwrap();
+        assert_eq!(attention["target"], json!("注意力"), "fields are trimmed");
+        assert_eq!(attention["domain"], json!("AI"));
+        assert_eq!(attention["enabled"], json!(true));
+        let legacy = terms.iter().find(|term| term["source"]=="Legacy").unwrap();
+        assert_eq!(legacy["enabled"], json!(false), "disabled rows are kept for later re-enable");
+        // Every entry has exactly the renderer contract keys.
+        for term in terms {
+            let object = term.as_object().unwrap();
+            assert_eq!(object.len(), 4, "{term}");
+            for key in ["source", "target", "domain", "enabled"] {
+                assert!(object.contains_key(key), "{term}");
+            }
+        }
+
+        assert_eq!(lib.enabled_glossary_pairs().unwrap(), vec![
+            ("Attention".to_string(), "注意力".to_string()),
+            ("Rollout".to_string(), "轨迹采样".to_string()),
+        ]);
+
+        // Invalid input is rejected before the table is touched.
+        assert!(lib.save_glossary(&json!({})).is_err());
+        assert!(lib.save_glossary(&json!({"terms":[{"source":"","target":"x"}]})).is_err());
+        assert!(lib.save_glossary(&json!({"terms":[{"source":"x","target":"  "}]})).is_err());
+        assert!(lib.save_glossary(&json!({"terms":[{"source":"x".repeat(201),"target":"y"}]})).is_err());
+        assert!(lib.save_glossary(&json!({"terms":[{"source":"x","target":"y".repeat(301)}]})).is_err());
+        assert!(lib.save_glossary(&json!({"terms":[{"source":"x","target":"y","domain":"z".repeat(101)}]})).is_err());
+        let too_many = (0..501).map(|i| json!({"source":format!("term-{i}"),"target":"t"})).collect::<Vec<_>>();
+        assert!(lib.save_glossary(&json!({"terms":too_many})).is_err());
+        assert_eq!(lib.list_glossary().unwrap()["terms"].as_array().unwrap().len(), 3, "rejected saves keep the old table");
+
+        drop(lib);
+        let reopened = Library::new(&root).unwrap();
+        assert_eq!(reopened.enabled_glossary_pairs().unwrap().len(), 2);
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn glossary_updates_the_live_gateway_on_save_and_reload() {
+        let root = std::env::temp_dir().join(format!("moonlight-glossary-gateway-{}", Uuid::new_v4()));
+        let lib = Library::new(&root).unwrap();
+        lib.reload_gateway(&json!({
+            "base_url":"http://127.0.0.1:1/v1","model":"test-model","api_key":"fixture-key"
+        })).unwrap();
+        let gateway = lib.gateway().unwrap();
+        assert!(gateway.glossary_terms().is_empty(), "a fresh library has no terms");
+
+        lib.save_glossary(&json!({"terms":[
+            {"source":"Rollout","target":"轨迹采样"},
+            {"source":"Register","target":"寄存器","enabled":false}
+        ]})).unwrap();
+        assert_eq!(gateway.glossary_terms(), vec![("Rollout".to_string(), "轨迹采样".to_string())],
+            "save hot-updates the shared gateway state, disabled rows excluded");
+        assert!(gateway.glossary_terms().iter().all(|(source, _)| source != "Register"));
+
+        // A credential hot-reload keeps the glossary in place.
+        lib.reload_gateway(&json!({"model":"another-model"})).unwrap();
+        assert_eq!(lib.gateway().unwrap().glossary_terms().len(), 1);
+        lib.gateway().unwrap().shutdown();
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn glossary_prompt_prefers_matched_terms_then_fills_globally() {
+        let root = std::env::temp_dir().join(format!("moonlight-glossary-prompt-{}", Uuid::new_v4()));
+        let lib = Library::new(&root).unwrap();
+        assert!(lib.glossary_prompt_for("anything", 24).unwrap().is_none(), "empty table keeps the historic prompt");
+        lib.save_glossary(&json!({"terms":[
+            {"source":"Rollout","target":"轨迹采样","domain":"RL"},
+            {"source":"Attention","target":"注意力","domain":"DL"},
+            {"source":"Register","target":"寄存器","domain":"Arch"}
+        ]})).unwrap();
+
+        let matched = lib.glossary_prompt_for("rollout sampling uses attention", 2).unwrap().unwrap();
+        assert!(matched.contains(GLOSSARY_MARKER), "{matched}");
+        assert!(matched.contains("Attention -> 注意力"), "matched terms are kept: {matched}");
+        assert!(matched.contains("Rollout -> 轨迹采样"), "{matched}");
+        assert_eq!(matched.matches(" -> ").count(), 2, "limit is respected: {matched}");
+        assert!(!matched.contains("Register"));
+
+        let single = lib.glossary_prompt_for("rollout sampling", 1).unwrap().unwrap();
+        assert_eq!(single.matches(" -> ").count(), 1);
+        assert!(single.contains("Rollout"), "{single}");
+
+        // No literal hit: globally enabled terms fill the slots in stable order.
+        let global = lib.glossary_prompt_for("无关文本", 2).unwrap().unwrap();
+        assert!(global.contains("Attention -> 注意力"), "{global}");
+        assert!(global.contains("Register -> 寄存器"), "{global}");
+        assert!(!global.contains("Rollout"), "{global}");
+
+        lib.save_glossary(&json!({"terms":[{"source":"Only","target":"唯一","enabled":false}]})).unwrap();
+        assert!(lib.glossary_prompt_for("Only", 24).unwrap().is_none(), "disabled-only table is invisible");
+
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_upgrade_from_v6_adds_glossary_terms() {
+        let root = std::env::temp_dir().join(format!("moonlight-schema-v7-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        {
+            let conn = Connection::open(root.join("library.db")).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch("DROP TABLE glossary_terms; DELETE FROM schema_migrations WHERE version>=7;").unwrap();
+            assert!(!table_exists(&conn, "glossary_terms").unwrap(), "fixture must start at v6");
+            // The migration itself must recreate the table on a v6 file.
+            apply_migrations(&conn, 6).unwrap();
+            assert!(table_exists(&conn, "glossary_terms").unwrap(), "v7 migration must add glossary_terms");
+            let columns: Vec<String> = conn.prepare("PRAGMA table_info(glossary_terms)").unwrap()
+                .query_map([], |row| row.get::<_, String>(1)).unwrap()
+                .filter_map(Result::ok).collect();
+            assert_eq!(columns, vec!["id", "source", "target", "domain", "enabled"]);
+        }
+        let lib = Library::new(&root).unwrap();
+        assert_eq!(lib.conn().query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+        lib.save_glossary(&json!({"terms":[{"source":"Attention","target":"注意力"}]})).unwrap();
+        assert_eq!(lib.list_glossary().unwrap()["terms"][0]["target"], json!("注意力"));
+        assert!(root.join("backups").read_dir().unwrap().next().is_some(), "v6→v7 creates the pre-upgrade snapshot");
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // ---- FEAT-UX-04 citation export ------------------------------------
+
+    #[test]
+    fn export_supports_gbt7714_and_apa_and_keeps_bibtex_ris_unchanged() {
+        let root = std::env::temp_dir().join(format!("moonlight-export-{}", Uuid::new_v4()));
+        let lib = Library::new(&root).unwrap();
+        lib.conn().execute(
+            "INSERT INTO papers(id,title,authors,year,venue,doi,arxiv,abstract,imported_at,updated_at) VALUES('p','Attention Is All You Need','Ada Lovelace, Alan Turing','2024','NeurIPS','10.1000/xyz','2401.00001','An abstract.',0,0)",
+            [],
+        ).unwrap();
+
+        let gbt = lib.export(vec!["p".into()], "gbt7714").unwrap();
+        assert_eq!(gbt, "[1] Ada Lovelace, Alan Turing. Attention Is All You Need[J/OL]. NeurIPS, 2024. DOI: 10.1000/xyz.");
+        let apa = lib.export(vec!["p".into()], "apa").unwrap();
+        assert_eq!(apa, "Lovelace, A., & Turing, A. (2024). Attention Is All You Need. NeurIPS. https://doi.org/10.1000/xyz.");
+
+        let bib = lib.export(vec!["p".into()], "bibtex").unwrap();
+        assert!(bib.starts_with("@article{"), "{bib}");
+        assert!(bib.contains("title = {Attention Is All You Need}"), "{bib}");
+        let ris = lib.export(vec!["p".into()], "ris").unwrap();
+        assert!(ris.starts_with("TY  - JOUR"), "{ris}");
+        assert!(ris.contains("AU  - Ada Lovelace"), "{ris}");
+        assert_eq!(lib.export(vec!["p".into()], "unknown").unwrap(), bib, "unknown formats keep the legacy BibTeX default");
+
+        // Numbering follows the requested order and survives missing fields.
+        lib.conn().execute(
+            "INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES('q','Plain Title','',0,0)",
+            [],
+        ).unwrap();
+        let two = lib.export(vec!["p".into(), "q".into()], "gbt7714").unwrap();
+        let lines = two.split("\n\n").collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("[1] "), "{two}");
+        assert_eq!(lines[1], "[2] Plain Title[J/OL].");
+        let apa_missing = lib.export(vec!["q".into()], "apa").unwrap();
+        assert_eq!(apa_missing, "(n.d.). Plain Title.");
+        drop(lib);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn open_for_mcp_coexists_with_desktop_instance_lock() {
+        let root = std::env::temp_dir().join(format!("moonlight-mcp-lock-{}", Uuid::new_v4()));
+        let owner = Library::new(&root).unwrap();
+        assert!(Library::new(&root).is_err(), "second writer must be blocked by .moonlight.lock");
+        owner.conn().execute(
+            "INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES('p1','知识蒸馏综述','Alice',1,1)",
+            [],
+        ).unwrap();
+
+        let mcp = Library::open_for_mcp(&root).unwrap();
+        assert_eq!(mcp.get_paper("p1").unwrap()["title"], json!("知识蒸馏综述"));
+        let page = crate::search::list_page(&mcp.conn(), &json!({"query":"蒸馏"})).unwrap();
+        assert_eq!(page["total"], json!(1));
+
+        drop(mcp);
+        drop(owner);
         fs::remove_dir_all(root).unwrap();
     }
 }

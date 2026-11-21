@@ -7,11 +7,15 @@ type Props = {
   onJump: (page: number, bbox?: number[]) => void;
   onResults: (matches: FindMatch[], index: number) => void;
   onClose: () => void;
+  /** Prefilled query when the reader was opened from a search hit. */
+  initialQuery?: string;
+  /** Prefer a hit on this one-based page (the page the user clicked in the library). */
+  preferredPage?: number;
 };
 
 /** In-document find bar: debounced search, case option, all-hit highlights. */
-export default function FindBar({ pane, onJump, onResults, onClose }: Props) {
-  const [query, setQuery] = useState("");
+export default function FindBar({ pane, onJump, onResults, onClose, initialQuery = "", preferredPage }: Props) {
+  const [query, setQuery] = useState(initialQuery);
   const [matches, setMatches] = useState<FindMatch[] | null>(null);
   const [index, setIndex] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -19,9 +23,15 @@ export default function FindBar({ pane, onJump, onResults, onClose }: Props) {
   const [error, setError] = useState("");
   const input = useRef<HTMLInputElement>(null);
   const token = useRef(0);
+  const attempts = useRef(0);
+  const consumedPreferred = useRef(false);
+  const retryTimer = useRef(0);
   const runRef = useRef<(needle: string) => Promise<void>>(async () => undefined);
 
+  useEffect(() => () => window.clearTimeout(retryTimer.current), []);
+
   useEffect(() => { input.current?.focus(); input.current?.select(); }, []);
+  useEffect(() => { if (initialQuery) setQuery(initialQuery); }, [initialQuery]);
 
   const land = useCallback((rows: FindMatch[], next: number) => {
     const match = rows[next];
@@ -32,17 +42,36 @@ export default function FindBar({ pane, onJump, onResults, onClose }: Props) {
   const run = useCallback(async (needle: string) => {
     const current = ++token.current;
     setBusy(true); setError("");
+    // The find bar can mount a few frames before pdf.js registers PaneApi.
+    // Retry briefly instead of reporting a false "no match".
+    if (!pane.current) {
+      if (attempts.current < 20) {
+        attempts.current += 1;
+        retryTimer.current = window.setTimeout(() => { if (current === token.current) void runRef.current(needle); }, 120);
+        return;
+      }
+      setBusy(false); setError("PDF 尚未加载完成，请稍后再试");
+      return;
+    }
+    attempts.current = 0;
     try {
-      const rows = (await (caseSensitive ? pane.current?.find(needle, { caseSensitive: true }) : pane.current?.find(needle))) || [];
+      const rows = (await (caseSensitive ? pane.current.find(needle, { caseSensitive: true }) : pane.current.find(needle))) || [];
       if (current !== token.current) return;
-      setMatches(rows); setIndex(0); land(rows, 0);
+      // A search opened from `p.X 直达` must land on that page's hit, not on the
+      // first occurrence (which is often the abstract on page 1).
+      const preferred = !consumedPreferred.current && preferredPage
+        ? rows.findIndex((row) => row.page === preferredPage)
+        : -1;
+      consumedPreferred.current = true;
+      const next = preferred >= 0 ? preferred : 0;
+      setMatches(rows); setIndex(next); land(rows, next);
     } catch (e) {
       if (current !== token.current) return;
       setError((e as Error).message); setMatches([]); onResults([], 0);
     } finally {
       if (current === token.current) setBusy(false);
     }
-  }, [caseSensitive, pane, land, onResults]);
+  }, [caseSensitive, pane, land, onResults, preferredPage]);
   runRef.current = run;
 
   useEffect(() => {
@@ -50,13 +79,16 @@ export default function FindBar({ pane, onJump, onResults, onClose }: Props) {
     setMatches(null);
     setIndex(0);
     onResults([], 0);
+    attempts.current = 0;
+    consumedPreferred.current = false;
+    window.clearTimeout(retryTimer.current);
     if (!needle) {
       token.current++;
       return;
     }
     const timer = setTimeout(() => { void runRef.current(needle); }, 300);
     return () => clearTimeout(timer);
-  }, [query, caseSensitive, onResults]);
+  }, [query, caseSensitive, onResults, preferredPage]);
 
   const step = (delta: number) => {
     const rows = matches || [];

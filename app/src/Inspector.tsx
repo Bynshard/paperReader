@@ -104,10 +104,16 @@ export default function Inspector({ paper, loading, error, categories = [], onCl
     if (!paper) return;
     setFilling(true); setSaveError("");
     try {
+      // refreshMetadata already writes to SQLite, so flush local edits first and
+      // never mark the refreshed record dirty (that would trigger a second save
+      // 900ms later and risk an expected_updated_at conflict).
+      if (dirty && !(await persist(true))) return;
       const fresh = await api.refreshMetadata(paper.id, false);
       const keys = ["title", "authors", "year", "venue", "doi", "arxiv", "abstract"] as const;
       setFields((all) => ({ ...all, ...Object.fromEntries(keys.map((key) => [key, String((fresh as unknown as Record<string, unknown>)[key] ?? all[key] ?? "")])) }));
-      setDirty(true); version.current++;
+      version.current++;
+      setDirty(false);
+      setSaveState("saved");
       onSaved(fresh);
       onToast(fresh.updated_fields?.length ? `已补全：${fresh.updated_fields.join("、")}` : "字段已是最新，没有可补全内容");
     } catch (e) {

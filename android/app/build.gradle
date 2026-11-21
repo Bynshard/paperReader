@@ -1,0 +1,51 @@
+plugins {
+  id 'com.android.application'
+}
+
+android {
+  namespace 'io.moonlight.pad'
+  compileSdk 35
+
+  defaultConfig {
+    applicationId 'io.moonlight.pad'
+    minSdk 26
+    targetSdk 35
+    versionCode (project.findProperty('moonlightVersionCode') ?: '1').toInteger()
+    versionName project.findProperty('moonlightVersion') ?: '0.1.0'
+  }
+
+  def keystorePath = System.getenv('MOONLIGHT_ANDROID_KEYSTORE')
+  def keystorePassword = System.getenv('MOONLIGHT_ANDROID_KEYSTORE_PASSWORD')
+  def keyAliasName = System.getenv('MOONLIGHT_ANDROID_KEY_ALIAS')
+  def keyPassword = System.getenv('MOONLIGHT_ANDROID_KEY_PASSWORD')
+
+  signingConfigs {
+    if (keystorePath && keystorePassword && keyAliasName) {
+      release {
+        storeFile file(keystorePath)
+        storePassword keystorePassword
+        keyAlias keyAliasName
+        keyPassword keyPassword ?: keystorePassword
+      }
+    }
+  }
+
+  buildTypes {
+    debug {
+      applicationIdSuffix '.debug'
+      versionNameSuffix '-debug'
+    }
+    release {
+      minifyEnabled false
+      if (keystorePath && keystorePassword && keyAliasName) {
+        signingConfig signingConfigs.release
+      }
+      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+    }
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+}

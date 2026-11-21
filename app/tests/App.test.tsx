@@ -5,7 +5,7 @@ import App from '../src/App';
 
 const mocks = vi.hoisted(() => ({paperPage:vi.fn(),taxonomy:vi.fn(),appInfo:vi.fn(),getPaper:vi.fn(),zoteroProbe:vi.fn(),zoteroImport:vi.fn(),pickDirectory:vi.fn(),saveText:vi.fn(),syncStatus:vi.fn(),listJobs:vi.fn(),onEvent:vi.fn(()=>()=>{})}));
 vi.mock('../src/api', () => ({api:mocks}));
-vi.mock('../src/Reader', () => ({default:({paper}:any) => <div>Reading {paper.title}</div>}));
+vi.mock('../src/Reader', () => ({default:({paper,active}:any) => <div data-active={active !== false}><span>Reading {paper.title}</span><span data-versions={paper.versions?.length ?? 0} /></div>}));
 const paper = (id:string) => ({id,title:`Paper ${id}`,authors:'Author',imported_at:0,updated_at:0,favorite:false,read_status:'unread',deleted:false,categories:[],tags:[],has_translation:false});
 function deferred<T>() {
   let resolve!: (value:T)=>void;
@@ -72,5 +72,43 @@ describe('library asynchronous requests',()=>{
     await act(async()=>{first.resolve({...paper('A'),versions:[]});});
     expect(screen.queryByText('Reading Paper A')).toBeNull();
     expect(screen.getByText('Reading Paper B')).toBeTruthy();
+  });
+  it('keeps multiple readers mounted and switches between workspace tabs without unloading them',async()=>{
+    mocks.paperPage.mockResolvedValue({items:[paper('A'),paper('B')],total:2,offset:0,limit:100});
+    mocks.getPaper.mockImplementation(async(id:string)=>({...paper(id),versions:[]}));
+    mount();
+    fireEvent.doubleClick(await screen.findByText('Paper A'));
+    await screen.findByText('Reading Paper A');
+    fireEvent.click(screen.getByRole('tab',{name:/论文库/}));
+    fireEvent.doubleClick(await screen.findByText('Paper B'));
+    await screen.findByText('Reading Paper B');
+    // Both readers stay mounted; only the active pane is visible.
+    expect(screen.getByText('Reading Paper A')).toBeTruthy();
+    expect(screen.getByText('Reading Paper A').closest('.workspace-pane')?.hasAttribute('hidden')).toBe(true);
+    expect(screen.getByText('Reading Paper A').parentElement?.getAttribute('data-active')).toBe('false');
+    fireEvent.click(screen.getByRole('tab',{name:/Paper A/}));
+    expect(screen.getByText('Reading Paper A').closest('.workspace-pane')?.hasAttribute('hidden')).toBe(false);
+    expect(screen.getByText('Reading Paper A').parentElement?.getAttribute('data-active')).toBe('true');
+    fireEvent.click(screen.getByRole('button',{name:'关闭 Paper A'}));
+    await waitFor(()=>expect(screen.queryByText('Reading Paper A')).toBeNull());
+    expect(screen.getByText('Reading Paper B')).toBeTruthy();
+  });
+  it('refreshes every open tab when a background job completes',async()=>{
+    let listener:(event:any)=>void=()=>undefined;
+    mocks.onEvent.mockImplementation((callback:any)=>{listener=callback;return ()=>undefined;});
+    mocks.paperPage.mockResolvedValue({items:[paper('A'),paper('B')],total:2,offset:0,limit:100});
+    let aVersions=0;
+    mocks.getPaper.mockImplementation(async(id:string)=>id==='A'
+      ? {...paper('A'),versions:aVersions?[{id:'t',paper_id:'A',kind:'translated',sha256:'x',rel_path:'x',pages:1,bytes:1,lang:'zh',created_at:1}]:[]}
+      : {...paper('B'),versions:[]});
+    mount();
+    fireEvent.doubleClick(await screen.findByText('Paper A'));
+    await screen.findByText('Reading Paper A');
+    fireEvent.click(screen.getByRole('tab',{name:/论文库/}));
+    fireEvent.doubleClick(await screen.findByText('Paper B'));
+    await screen.findByText('Reading Paper B');
+    aVersions=1;
+    await act(async()=>{listener({event:'job',jobId:'j1',status:'completed'});});
+    await waitFor(()=>expect(screen.getByText('Reading Paper A').closest('.workspace-pane')?.querySelector('[data-versions="1"]')).toBeTruthy());
   });
 });

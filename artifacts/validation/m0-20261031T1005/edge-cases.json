@@ -182,7 +182,7 @@
       "error": null
     },
     "engine_status": "failed",
-    "elapsed_s": 6.3,
+    "elapsed_s": 6.6,
     "log": "artifacts/validation/m0-20261031T1005/outputs/edge-cases/scanned-page/babeldoc.log",
     "status": "unsupported",
     "reason": "scanned page skipped by engine",

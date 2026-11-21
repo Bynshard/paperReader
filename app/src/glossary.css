@@ -1,0 +1,111 @@
+/* Custom glossary editor (FEAT-UX-03). Scoped to .glossary-editor so the shared
+   settings stylesheet stays untouched; uses the app design tokens only. */
+
+.glossary-editor {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.glossary-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: left;
+  border-radius: 7px;
+}
+
+.glossary-toggle:hover {
+  background: rgba(24, 26, 31, 0.04);
+}
+
+.glossary-count {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.glossary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.glossary-body > p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.glossary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.glossary-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.glossary-file {
+  display: none;
+}
+
+.glossary-rows {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.glossary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 0.8fr) 40px 34px;
+  align-items: center;
+  gap: 7px;
+}
+
+.glossary-row-head {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+  padding: 0 2px;
+}
+
+.glossary-row input:not([type="checkbox"]) {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.glossary-row input:not([type="checkbox"]):focus {
+  outline: none;
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.glossary-enabled {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+}
+
+.glossary-row .btn.danger {
+  justify-self: end;
+}

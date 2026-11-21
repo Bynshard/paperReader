@@ -9,19 +9,99 @@
 //!   的二字词（“蒸馏/量化/微调”）与中文正文命中；
 //! * `blocks_fts`：unicode61 前缀检索，兜住 1~2 个字符的拉丁缩写（“RL/LM”）
 //!   和 1 个汉字的场景。
+//!
+//! 二元组的切分规则以 [`crate::cjk::han_bigrams`] 为唯一实现：`initialize`
+//! 在连接上注册 `han_bigrams(text)` 标量函数，触发器与回填 SQL 直接调用它，
+//! 不再用 `WITH RECURSIVE` + `substr()` 在 SQLite 里按字节定位字符（O(L^2)）。
 use crate::cjk;
 use anyhow::Result;
-use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
+use rusqlite::{ffi, params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
-/// 汉字码位范围（扩展 A / 基本区 / 兼容区），必须与 [`crate::cjk::is_han`]
-/// 保持一致：建索引时 SQL 写入的二元组和查询时 Rust 算出的二元组否则会对不上。
-const HAN_RANGES: [(u32, u32); 3] = [(0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF)];
 /// Per-connection temporary table that materialises the FTS rowid match set once.
 const MATCH_TABLE: &str = "tmp_match_papers";
 
+/// 注册 `han_bigrams(text)` 标量函数（UTF-8、确定性、NULL 进 NULL 出）。
+///
+/// 二元组索引的触发器与回填 SQL 都调用这个函数，所以**任何可能写入
+/// `papers`/`blocks` 的连接都必须先注册**；只读连接不会执行触发器，但注册
+/// 本身幂等且无副作用，调用方不必区分读写。`initialize` 也会调用它，因此
+/// 走正常初始化的写连接一定可用。
+///
+/// 说明：本 crate 的 `rusqlite` 只开了 `bundled` + `backup` 特性，
+/// `Connection::create_scalar_function` 需要额外开启 `functions` 特性；为了
+/// 不扩大改动面（只改 `search.rs`/`main.rs`），这里通过 `rusqlite::ffi`
+/// 直接注册同一套 `SQLITE_UTF8 | SQLITE_DETERMINISTIC` 函数。
+pub fn register(conn: &Connection) -> rusqlite::Result<()> {
+    // SAFETY: `conn.handle()` 只在该连接存活期间使用；回调只读取 SQLite 传入的
+    // 参数，并在返回前把结果交给 SQLite（SQLITE_TRANSIENT 会复制结果内存）。
+    unsafe {
+        let rc = ffi::sqlite3_create_function_v2(
+            conn.handle(),
+            b"han_bigrams\0".as_ptr().cast(),
+            1,
+            ffi::SQLITE_UTF8 | ffi::SQLITE_DETERMINISTIC,
+            std::ptr::null_mut(),
+            Some(han_bigrams_scalar),
+            None,
+            None,
+            None,
+        );
+        if rc != ffi::SQLITE_OK {
+            return Err(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(rc),
+                Some("register scalar function han_bigrams".into()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `han_bigrams(text)` 的 C 实现：切分规则与 [`crate::cjk::han_bigrams`] 完全
+/// 一致，二元组之间用空格连接（与旧 SQL `group_concat(...,' ')` 的输出一致）。
+unsafe extern "C" fn han_bigrams_scalar(
+    ctx: *mut ffi::sqlite3_context,
+    _argc: i32,
+    argv: *mut *mut ffi::sqlite3_value,
+) {
+    let value = *argv;
+    if value.is_null() || ffi::sqlite3_value_type(value) == ffi::SQLITE_NULL {
+        ffi::sqlite3_result_null(ctx);
+        return;
+    }
+    let text = ffi::sqlite3_value_text(value);
+    if text.is_null() {
+        ffi::sqlite3_result_null(ctx);
+        return;
+    }
+    let len = ffi::sqlite3_value_bytes(value).max(0) as usize;
+    let bytes = std::slice::from_raw_parts(text, len);
+    match std::str::from_utf8(bytes) {
+        Ok(text) => {
+            let joined = cjk::han_bigrams(text).join(" ");
+            // SQLITE_TRANSIENT: SQLite 复制 joined 的字节，不依赖 Rust 的分配。
+            ffi::sqlite3_result_text(
+                ctx,
+                joined.as_ptr().cast(),
+                joined.len() as i32,
+                ffi::SQLITE_TRANSIENT(),
+            );
+        }
+        // SQLite 的 TEXT/MATCH 输入按约定都是 UTF-8，这里只做防御。
+        Err(_) => ffi::sqlite3_result_error(
+            ctx,
+            b"han_bigrams: invalid utf-8\0".as_ptr().cast(),
+            -1,
+        ),
+    }
+}
+
 pub fn initialize(conn: &Connection) -> Result<()> {
+    // 触发器里会调用 han_bigrams()，必须先为这条连接注册函数。
+    register(conn)?;
     let legacy_migrated: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='blocks_fts_insert_v2')", [], |r| r.get(0))?;
     if !legacy_migrated {
@@ -78,6 +158,9 @@ fn initialize_bigram(conn: &Connection) -> Result<()> {
 /// 元数据编辑、级联删除），所以二元组由 **SQL 触发器**生成，而不是在 Rust 里
 /// 逐个写入点挂钩子。删除走“触发器删内容表行 + 内容表触发器同步 FTS”，
 /// `ON DELETE CASCADE` 触发的行删除同样会命中，不会留下孤儿 token。
+///
+/// 触发器每次初始化都 `DROP` 后重建：旧库里的触发器是递归 CTE 版本，只有
+/// 重建才能被 `han_bigrams()` 版本替换，且重建是幂等的。
 fn ensure_bigram_index(
     conn: &Connection,
     index: &str,
@@ -93,23 +176,29 @@ fn ensure_bigram_index(
         BEGIN;
         CREATE TABLE IF NOT EXISTS {index}_src(rowid INTEGER PRIMARY KEY, bigrams TEXT NOT NULL);
         CREATE VIRTUAL TABLE IF NOT EXISTS {index} USING fts5(bigrams,content='{index}_src',content_rowid='rowid',tokenize='unicode61',detail=none);
-        CREATE TRIGGER IF NOT EXISTS {index}_src_insert AFTER INSERT ON {index}_src BEGIN
+        DROP TRIGGER IF EXISTS {index}_src_insert;
+        DROP TRIGGER IF EXISTS {index}_src_delete;
+        DROP TRIGGER IF EXISTS {index}_src_update;
+        CREATE TRIGGER {index}_src_insert AFTER INSERT ON {index}_src BEGIN
             INSERT INTO {index}(rowid,bigrams) VALUES(new.rowid,new.bigrams);
         END;
-        CREATE TRIGGER IF NOT EXISTS {index}_src_delete AFTER DELETE ON {index}_src BEGIN
+        CREATE TRIGGER {index}_src_delete AFTER DELETE ON {index}_src BEGIN
             INSERT INTO {index}({index},rowid,bigrams) VALUES('delete',old.rowid,old.bigrams);
         END;
-        CREATE TRIGGER IF NOT EXISTS {index}_src_update AFTER UPDATE OF bigrams ON {index}_src BEGIN
+        CREATE TRIGGER {index}_src_update AFTER UPDATE OF bigrams ON {index}_src BEGIN
             INSERT INTO {index}({index},rowid,bigrams) VALUES('delete',old.rowid,old.bigrams);
             INSERT INTO {index}(rowid,bigrams) VALUES(new.rowid,new.bigrams);
         END;
-        CREATE TRIGGER IF NOT EXISTS {index}_insert AFTER INSERT ON {table} BEGIN
+        DROP TRIGGER IF EXISTS {index}_insert;
+        DROP TRIGGER IF EXISTS {index}_delete;
+        DROP TRIGGER IF EXISTS {index}_update;
+        CREATE TRIGGER {index}_insert AFTER INSERT ON {table} BEGIN
             {insert_rows};
         END;
-        CREATE TRIGGER IF NOT EXISTS {index}_delete AFTER DELETE ON {table} BEGIN
+        CREATE TRIGGER {index}_delete AFTER DELETE ON {table} BEGIN
             DELETE FROM {index}_src WHERE rowid=old.rowid;
         END;
-        CREATE TRIGGER IF NOT EXISTS {index}_update AFTER UPDATE OF {watched_columns} ON {table} BEGIN
+        CREATE TRIGGER {index}_update AFTER UPDATE OF {watched_columns} ON {table} BEGIN
             DELETE FROM {index}_src WHERE rowid=old.rowid;
             {insert_rows};
         END;
@@ -129,44 +218,25 @@ fn ensure_bigram_index(
     Ok(())
 }
 
-fn han_char_predicate(expression: &str) -> String {
-    HAN_RANGES.iter()
-        .map(|(low, high)| format!("({expression} BETWEEN char({low}) AND char({high}))"))
-        .collect::<Vec<_>>()
-        .join(" OR ")
-}
-
-fn han_glob_predicate(expression: &str) -> String {
-    HAN_RANGES.iter()
-        .map(|(low, high)| format!("({expression} GLOB ('*['||char({low})||'-'||char({high})||']*'))"))
-        .collect::<Vec<_>>()
-        .join(" OR ")
-}
-
-/// 相邻汉字二元组标量表达式：与 [`crate::cjk::han_bigrams`] 的切分规则一致，
-/// 用递归 CTE 按字符位置取 `substr(text,i,2)`，两端都必须是汉字。
+/// 相邻汉字二元组标量表达式：直接调用连接上注册的 `han_bigrams()` 函数
+/// （Rust 原生、一次线性扫描），与旧递归 CTE 的切分规则一致。
 fn bigrams_expression(text: &str) -> String {
-    format!(r#"(WITH RECURSIVE pos(i) AS (
-            SELECT 1 WHERE length({text}) >= 2
-            UNION ALL SELECT i+1 FROM pos WHERE i < length({text}) - 1)
-        SELECT group_concat(substr({text},i,2),' ') FROM pos
-        WHERE ({first}) AND ({second}))"#,
-        text = text,
-        first = han_char_predicate(&format!("substr({text},i,1)")),
-        second = han_char_predicate(&format!("substr({text},i+1,1)")))
+    format!("han_bigrams({text})")
 }
 
-/// 汉字判定放在派生表的 WHERE 里，纯英文行不会白白跑一遍递归。
+/// 触发器里先算一次二元组，再由 `g IS NOT NULL AND g<>''` 过滤：纯英文、
+/// 空白或没有相邻汉字的行不会往内容表写空串。旧实现还在派生表 WHERE 里用
+/// `GLOB` 预判汉字、避免白跑递归；原生函数本身就是 O(L)，不再需要预判。
 fn bigrams_insert_statement(index: &str, new_text: &str) -> String {
     format!(
-        "INSERT INTO {index}_src(rowid,bigrams) SELECT new.rowid,g FROM (SELECT {} AS g WHERE {}) WHERE g IS NOT NULL AND g<>''",
-        bigrams_expression(new_text), han_glob_predicate(new_text))
+        "INSERT INTO {index}_src(rowid,bigrams) SELECT new.rowid,g FROM (SELECT {} AS g) WHERE g IS NOT NULL AND g<>''",
+        bigrams_expression(new_text))
 }
 
 fn bigrams_backfill_statement(index: &str, table: &str, row_text: &str) -> String {
     format!(
-        "INSERT INTO {index}_src(rowid,bigrams) SELECT rowid,g FROM (SELECT b.rowid AS rowid, {} AS g FROM {table} b WHERE {}) WHERE g IS NOT NULL AND g<>''",
-        bigrams_expression(row_text), han_glob_predicate(row_text))
+        "INSERT INTO {index}_src(rowid,bigrams) SELECT rowid,g FROM (SELECT b.rowid AS rowid, {} AS g FROM {table} b) WHERE g IS NOT NULL AND g<>''",
+        bigrams_expression(row_text))
 }
 
 const PAPER_BIGRAM_NEW: &str =
@@ -296,8 +366,180 @@ pub fn list_page(conn: &Connection, p: &Value) -> Result<Value> {
             let rows = stmt.query_map(params_from_iter(ids.iter()), |r| Ok((r.get::<_,String>(0)?,json!({"id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"color":r.get::<_,Option<String>>(3)?}))))?;
             for row in rows { let (id,value)=row?; if let Some(&i)=positions.get(&id) { items[i][field].as_array_mut().unwrap().push(value); } }
         }
+        // Search hits: show the first body match (page + surrounding text) so a
+        // reader can jump straight from the library to the paragraph. Only the
+        // <=200 returned rows are queried, LIKE is literal-escaped, and the
+        // candidate blocks are limited to the paper's current source PDF and
+        // newest translation: blocks of superseded translations stay in the
+        // table but must never become the jump target.
+        if !query.is_empty() {
+            let pattern = format!("%{}%", like_escape(&query));
+            // Fallback tokens for phrases that a PDF wrapped across a newline:
+            // `LIKE '%attention bottleneck%'` misses `attention\nbottleneck`,
+            // yet every word is right there in the block.
+            let tokens = query_tokens(&query);
+            let mut source_stmt = conn.prepare("SELECT id FROM versions WHERE paper_id=? AND kind='source' ORDER BY created_at,id LIMIT 1")?;
+            let mut translated_stmt = conn.prepare("SELECT id FROM versions WHERE paper_id=? AND kind='translated' ORDER BY created_at DESC,id DESC LIMIT 1")?;
+            // 同一论文最多两个候选版本：主 source 版本优先，其次最新译文。
+            let mut exact_stmt = conn.prepare("SELECT page,text,version_id FROM blocks WHERE paper_id=?1 AND version_id IN (?2,?3) AND text LIKE ?4 ESCAPE '\\' ORDER BY CASE version_id WHEN ?2 THEN 0 WHEN ?3 THEN 1 ELSE 2 END,page,block_index LIMIT 1")?;
+            let mut token_stmt = if tokens.len() > 1 {
+                let mut sql = String::from("SELECT page,text,version_id FROM blocks WHERE paper_id=?1 AND version_id IN (?2,?3)");
+                for index in 0..tokens.len() {
+                    sql.push_str(&format!(" AND text LIKE ?{} ESCAPE '\\'", index + 4));
+                }
+                sql.push_str(" ORDER BY CASE version_id WHEN ?2 THEN 0 WHEN ?3 THEN 1 ELSE 2 END,page,block_index LIMIT 1");
+                Some(conn.prepare(&sql)?)
+            } else {
+                None
+            };
+            for item in items.iter_mut() {
+                let paper_id = item["id"].as_str().unwrap().to_string();
+                let source = source_stmt.query_row(params![&paper_id], |r| r.get::<_,String>(0)).optional()?.unwrap_or_default();
+                let translated = translated_stmt.query_row(params![&paper_id], |r| r.get::<_,String>(0)).optional()?.unwrap_or_default();
+                let exact = exact_stmt.query_row(params![&paper_id, &source, &translated, &pattern], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,Option<String>>(2)?))).optional()?;
+                let (hit, needle) = match (exact, token_stmt.as_mut()) {
+                    (Some(hit), _) => (Some(hit), query.as_str()),
+                    (None, Some(stmt)) => {
+                        let mut args: Vec<SqlValue> = vec![SqlValue::Text(paper_id.clone()), SqlValue::Text(source.clone()), SqlValue::Text(translated.clone())];
+                        args.extend(tokens.iter().map(|token| SqlValue::Text(format!("%{}%", like_escape(token)))));
+                        let hit = stmt.query_row(params_from_iter(args.iter()), |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,Option<String>>(2)?))).optional()?;
+                        (hit, tokens[0].as_str())
+                    }
+                    (None, None) => (None, query.as_str()),
+                };
+                if let Some((page,text,version_id)) = hit {
+                    item["match_snippet"] = json!({
+                        "page": page,
+                        "text": snippet_around(&text, needle, 80),
+                        "version_id": version_id,
+                    });
+                }
+            }
+        }
     }
     Ok(json!({"items":items,"total":total,"offset":offset,"limit":limit}))
+}
+
+/// Escape LIKE wildcards so a query containing `%` or `_` stays literal.
+fn like_escape(query: &str) -> String {
+    query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// Split a query for the snippet fallback: whitespace separates words, and a
+/// CJK run is its own token (mixed input like `蒸馏 distillation` yields two
+/// tokens). Edge punctuation is trimmed and duplicates are dropped
+/// case-insensitively. Tokens are matched as case-insensitive substrings, so a
+/// phrase split by a PDF line break is still found word by word.
+fn query_tokens(query: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_han = false;
+    for ch in query.chars() {
+        if ch.is_whitespace() {
+            push_token(&mut current, &mut tokens);
+            current_han = false;
+            continue;
+        }
+        let han = cjk::is_han(ch);
+        if !current.is_empty() && han != current_han {
+            push_token(&mut current, &mut tokens);
+        }
+        current_han = han;
+        current.push(ch);
+    }
+    push_token(&mut current, &mut tokens);
+    tokens
+}
+
+fn push_token(current: &mut String, tokens: &mut Vec<String>) {
+    let trimmed = current.trim_matches(|c: char| !(c.is_alphanumeric() || cjk::is_han(c)));
+    if !trimmed.is_empty() && !tokens.iter().any(|token| token.eq_ignore_ascii_case(trimmed)) {
+        tokens.push(trimmed.to_string());
+    }
+    current.clear();
+}
+
+/// ±`radius` characters around the first case-insensitive match, newline-free.
+fn snippet_around(text: &str, query: &str, radius: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let needle: Vec<char> = query.to_lowercase().chars().collect();
+    if needle.is_empty() || chars.is_empty() { return String::new(); }
+    let lowered: Vec<char> = text.to_lowercase().chars().collect();
+    let found = (0..=lowered.len().saturating_sub(needle.len()))
+        .find(|&start| lowered[start..start + needle.len()] == needle[..]);
+    let start = found.map(|index| index.saturating_sub(radius)).unwrap_or(0).min(chars.len());
+    let end = found
+        .map(|index| (index + needle.len() + radius).min(chars.len()))
+        .unwrap_or_else(|| chars.len().min(radius * 2))
+        .max(start);
+    let mut snippet: String = chars[start..end].iter().collect::<String>().replace(['\n', '\r'], " ");
+    if start > 0 { snippet.insert(0, '…'); }
+    if end < chars.len() { snippet.push('…'); }
+    snippet
+}
+
+/// 只读分页连接池：平板通过局域网 HTTP 搜索时**绝不占用写连接**。
+///
+/// 每次请求都是一条独立只读连接上的快照事务；连接用完后回到池里复用。
+/// `max_idle` 只限制“闲置缓存”的大小，不限制并发：突发请求会临时多开连接，
+/// HTTP 服务端的 `MAX_CONNECTIONS`（64）是并发上限，避免读请求排队等写锁。
+///
+/// 池里的连接各自持有 `tmp_match_papers` 临时表，因此并发搜索互不覆盖匹配
+/// 集合（与 JSONL 只读池语义一致）。
+pub struct ReadPool {
+    db: PathBuf,
+    idle: Mutex<Vec<Connection>>,
+    max_idle: usize,
+}
+
+impl ReadPool {
+    pub fn new(db: PathBuf, max_idle: usize) -> Self {
+        Self { db, idle: Mutex::new(Vec::new()), max_idle: max_idle.max(1) }
+    }
+
+    fn open(&self) -> Result<Connection> {
+        let conn = Connection::open_with_flags(&self.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        register(&conn)?;
+        Ok(conn)
+    }
+
+    fn checkout(&self) -> Result<Connection> {
+        if let Some(conn) = self.idle.lock().map_err(|_| anyhow::anyhow!("read pool poisoned"))?.pop() {
+            return Ok(conn);
+        }
+        self.open()
+    }
+
+    fn release(&self, conn: Connection) {
+        if let Ok(mut idle) = self.idle.lock() {
+            if idle.len() < self.max_idle {
+                idle.push(conn);
+            }
+        }
+    }
+
+    /// Run a read-only closure on a pooled connection. Used by the LAN server
+    /// for light reads (`get_paper` / `list_annotations` / `list_taxonomy` /
+    /// `ai_history`) so a long import or AI write cannot block the tablet.
+    pub fn with_connection<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let conn = self.checkout()?;
+        let value = f(&conn);
+        self.release(conn);
+        value
+    }
+
+    /// 与 [`list_page`] 相同的分页查询，但走只读连接池，不触碰 `Library::conn()`。
+    pub fn list_page(&self, params: &Value) -> Result<Value> {
+        let mut conn = self.checkout()?;
+        let value = {
+            let tx = conn.transaction()?;
+            let value = list_page(&tx, params)?;
+            tx.commit()?;
+            value
+        };
+        self.release(conn);
+        Ok(value)
+    }
 }
 
 #[cfg(test)]
@@ -357,6 +599,82 @@ mod tests {
         assert!(a["items"][0].get("abstract").is_none());assert!(a["items"][0].get("versions").is_none());
         assert_eq!(f.page(json!({"limit":10000}))["items"].as_array().unwrap().len(),200);
         assert_eq!(f.page(json!({"offset":9999}))["total"],250);
+    }
+    #[test]
+    fn read_pool_pages_without_the_write_connection() {
+        let f=Fixture::new(12);
+        let pool=ReadPool::new(f.root.join("library.db"),2);
+        // 持有唯一的写连接（SQLite WAL 下写锁不影响读快照），池仍然能分页。
+        let write=f.lib().conn();
+        let page=pool.list_page(&json!({"limit":5})).unwrap();
+        assert_eq!(page["total"],12);
+        assert_eq!(page["items"].as_array().unwrap().len(),5);
+        // 复用池里的连接执行第二次分页，行为与首次一致。
+        let again=pool.list_page(&json!({"limit":5,"offset":5})).unwrap();
+        assert_eq!(again["total"],12);
+        assert_ne!(page["items"][0]["id"],again["items"][0]["id"]);
+        let count=pool.with_connection(|conn| Ok(conn.query_row("SELECT count(*) FROM papers",[],|r|r.get::<_,i64>(0))?)).unwrap();
+        assert_eq!(count,12,"generic read closure reuses a pooled connection");
+        drop(write);
+    }
+    #[test]
+    fn full_text_query_returns_the_first_matching_page_snippet() {
+        let f=Fixture::new(2000);
+        let page=f.page(json!({"query":"sparseneedle","limit":5}));
+        assert_eq!(page["total"],2,"seed marks every 1000th paper with the needle");
+        let item=&page["items"][0];
+        let snippet=&item["match_snippet"];
+        assert!(snippet.is_object(),"query result must carry a snippet: {item}");
+        assert!(snippet["text"].as_str().unwrap().contains("sparseneedle"));
+        assert!(snippet["page"].as_i64().unwrap()>=0);
+        // Literal wildcards must not turn the LIKE fallback into a full scan.
+        let percent=f.page(json!({"query":"100%"}));
+        assert_eq!(percent["total"],0,"% is escaped as a literal, not a wildcard");
+    }
+    #[test]
+    fn phrase_wrapped_across_a_newline_still_yields_a_body_snippet() {
+        let f=Fixture::empty();
+        {
+            let conn=f.lib().conn();
+            // 标题命中 trigram 索引，让论文出现在结果里；正文里两个词被 PDF
+            // 换行拆开，连续子串 LIKE 查不到，必须靠分词回退定位到第 3 页。
+            insert_paper(&conn,"wrapped-phrase","The attention bottleneck in transformers");
+            insert_block(&conn,"wrapped-phrase",3,0,"We show that the attention\nbottleneck limits long-context recall.");
+        }
+        let page=f.page(json!({"query":"attention bottleneck"}));
+        assert_eq!(page["total"],1);
+        let item=&page["items"][0];
+        let snippet=&item["match_snippet"];
+        assert!(snippet.is_object(),"跨行短语也必须给出 match_snippet: {item}");
+        assert_eq!(snippet["page"],3);
+        let text=snippet["text"].as_str().unwrap();
+        assert!(text.contains("attention")&&text.contains("bottleneck"),"摘要应围绕第一个词: {text}");
+        assert_eq!(snippet["version_id"],"wrapped-phrase-v");
+    }
+    #[test]
+    fn snippet_ignores_superseded_translations_and_uses_the_latest() {
+        let f=Fixture::empty();
+        {
+            let conn=f.lib().conn();
+            insert_paper(&conn,"retranslated","Retranslated paper with two translations");
+            insert_block(&conn,"retranslated",0,0,"source body has no hit");
+            // 旧译文仍留在 blocks 表里（页 2），但已经不是有效译文；若不按版本
+            // 过滤，它会在 (page, block_index) 顺序下抢到 match_snippet。
+            conn.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,created_at) VALUES('trans-old','retranslated','translated','old','derived/old.pdf',5,1,100)",[]).unwrap();
+            conn.execute("INSERT INTO blocks(id,paper_id,version_id,page,block_index,kind,bbox,text) VALUES('old-hint','retranslated','trans-old',2,0,'text','[]','过时译文里的 attention bottleneck 旧片段')",[]).unwrap();
+            // 最新的重译版本（页 9）：摘要与页码都必须取自这一版。
+            conn.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,created_at) VALUES('trans-new','retranslated','translated','new','derived/new.pdf',9,1,200)",[]).unwrap();
+            conn.execute("INSERT INTO blocks(id,paper_id,version_id,page,block_index,kind,bbox,text) VALUES('new-hint','retranslated','trans-new',9,0,'text','[]','最新译文里的 attention bottleneck 新片段')",[]).unwrap();
+        }
+        let page=f.page(json!({"query":"attention bottleneck"}));
+        assert_eq!(page["total"],1);
+        let item=&page["items"][0];
+        let snippet=&item["match_snippet"];
+        assert!(snippet.is_object(),"最新译文里命中就必须给出 match_snippet: {item}");
+        assert_eq!(snippet["version_id"],"trans-new","淘汰的旧译文不能成为跳转目标");
+        assert_eq!(snippet["page"],9);
+        let text=snippet["text"].as_str().unwrap();
+        assert!(text.contains("新片段")&&!text.contains("旧片段"),"{text}");
     }
     #[test]
     fn sort_and_filters_execute_before_pagination() {
@@ -493,6 +811,70 @@ mod tests {
         drop(f.lib.take());
         let reopened=Library::new(&f.root).unwrap();
         assert_eq!(list_page(&reopened.conn(),&json!({"query":"微调"})).unwrap()["total"],1);
+    }
+    #[test]
+    fn han_bigrams_scalar_function_is_registered_and_null_safe() {
+        let f=Fixture::empty();
+        let conn=f.lib().conn();
+        // initialize 已在写连接上注册函数，触发器用的就是这份实现。
+        let grams:String=conn.query_row("SELECT han_bigrams('知识蒸馏模型')",[],|r|r.get(0)).unwrap();
+        assert_eq!(grams,"知识 识蒸 蒸馏 馏模 模型");
+        // 纯英文、空白、单个汉字没有相邻二元组：返回空串而不是 NULL。
+        for text in ["plain english only","   \n\t","单"] {
+            let grams:String=conn.query_row("SELECT han_bigrams(?)",params![text],|r|r.get(0)).unwrap();
+            assert_eq!(grams,"", "{text:?}");
+        }
+        let null:Option<String>=conn.query_row("SELECT han_bigrams(NULL)",[],|r|r.get(0)).unwrap();
+        assert!(null.is_none(),"NULL 进 NULL 出");
+    }
+    #[test]
+    fn bigram_triggers_write_native_output_on_insert_update_and_blank() {
+        let f=Fixture::empty();
+        {
+            let conn=f.lib().conn();
+            insert_paper(&conn,"native","知识蒸馏模型");
+            let papers:String=conn.query_row("SELECT s.bigrams FROM papers_bigram_src s JOIN papers p ON p.rowid=s.rowid WHERE p.id='native'",[],|r|r.get(0)).unwrap();
+            assert_eq!(papers,"知识 识蒸 蒸馏 馏模 模型","INSERT 触发器必须写入 han_bigrams() 的输出");
+            insert_block(&conn,"native",0,0,"我们使用知识蒸馏把模型压缩到四分之一");
+            let blocks:String=conn.query_row("SELECT s.bigrams FROM blocks_bigram_src s JOIN blocks b ON b.rowid=s.rowid WHERE b.paper_id='native'",[],|r|r.get(0)).unwrap();
+            assert!(blocks.split(' ').any(|g|g=="蒸馏"),"{blocks}");
+            // UPDATE 标题：旧二元组被替换，新二元组立即可查。
+            conn.execute("UPDATE papers SET title='稀疏量化推理' WHERE id='native'",[]).unwrap();
+            let updated:String=conn.query_row("SELECT s.bigrams FROM papers_bigram_src s JOIN papers p ON p.rowid=s.rowid WHERE p.id='native'",[],|r|r.get(0)).unwrap();
+            assert_eq!(updated,"稀疏 疏量 量化 化推 推理");
+            // UPDATE 成纯英文：内容表不能留下空串行。
+            conn.execute("UPDATE papers SET title='plain english only' WHERE id='native'",[]).unwrap();
+            let rows:i64=conn.query_row("SELECT count(*) FROM papers_bigram_src s JOIN papers p ON p.rowid=s.rowid WHERE p.id='native'",[],|r|r.get(0)).unwrap();
+            assert_eq!(rows,0,"纯英文行不应写入空二元组");
+        }
+        // 正文仍由触发器生成的二元组命中；标题里的“量化”已随更新消失。
+        assert_eq!(f.page(json!({"query":"蒸馏"}))["total"],1);
+        assert_eq!(f.page(json!({"query":"量化"}))["total"],0);
+    }
+    #[test]
+    fn initialize_replaces_legacy_bigram_triggers_and_is_idempotent() {
+        let f=Fixture::empty();
+        {
+            let conn=f.lib().conn();
+            // 模拟旧库遗留的触发器：写入固定标记，而不是真实二元组。
+            conn.execute_batch(r#"
+                DROP TRIGGER papers_bigram_insert;
+                CREATE TRIGGER papers_bigram_insert AFTER INSERT ON papers BEGIN
+                    INSERT INTO papers_bigram_src(rowid,bigrams) VALUES(new.rowid,'LEGACY_RECURSIVE_CTE');
+                END;
+            "#).unwrap();
+            // 连续两次初始化都不能报错，且必须把旧触发器替换成 han_bigrams 版本。
+            initialize(&conn).unwrap();
+            initialize(&conn).unwrap();
+            let trigger:String=conn.query_row("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='papers_bigram_insert'",[],|r|r.get(0)).unwrap();
+            assert!(trigger.contains("han_bigrams("),"{trigger}");
+            assert!(!trigger.contains("WITH RECURSIVE"),"{trigger}");
+            insert_paper(&conn,"upgraded","知识蒸馏");
+            let grams:String=conn.query_row("SELECT s.bigrams FROM papers_bigram_src s JOIN papers p ON p.rowid=s.rowid WHERE p.id='upgraded'",[],|r|r.get(0)).unwrap();
+            assert_eq!(grams,"知识 识蒸 蒸馏");
+        }
+        // 释放写连接锁后再查询：std Mutex 不可重入，list_page 会自己取连接。
+        assert_eq!(f.page(json!({"query":"蒸馏"}))["total"],1);
     }
     #[test]
     fn paper_bigram_tracks_metadata_edits_and_deletes() {

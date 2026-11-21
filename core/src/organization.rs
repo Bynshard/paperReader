@@ -197,6 +197,240 @@ pub fn list_duplicates(lib:&Library,_p:&Value)->Result<Value> {
     let total=groups.len();Ok(json!({"groups":groups,"count":total}))
 }
 
+/// Read status ordering used by the merge: `read > reading > unread`.
+fn status_rank(status: &str) -> u8 {
+    match status {
+        "read" => 2,
+        "reading" => 1,
+        _ => 0,
+    }
+}
+
+fn blank(value: &Option<String>) -> bool {
+    value.as_deref().map(str::trim).unwrap_or("").is_empty()
+}
+
+/// Copy a non-empty secondary value into an empty primary column.
+fn fill_blank(target: &mut Option<String>, candidate: &Option<String>) {
+    if blank(target) {
+        if let Some(value) = candidate.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            *target = Some(value.to_string());
+        }
+    }
+}
+
+/// Append note segments without losing formatting; identical segments (the
+/// common "same Zotero note imported twice" case) are kept once.
+fn merge_notes(existing: &str, incoming: &str) -> String {
+    let mut segments: Vec<String> = existing
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut seen: HashSet<String> = segments.iter().cloned().collect();
+    for segment in incoming.split("\n\n").map(str::trim).filter(|segment| !segment.is_empty()) {
+        if seen.insert(segment.to_string()) {
+            segments.push(segment.to_string());
+        }
+    }
+    segments.join("\n\n")
+}
+
+struct MergeRow {
+    authors: String,
+    year: Option<String>,
+    venue: Option<String>,
+    doi: Option<String>,
+    arxiv: Option<String>,
+    abstract_text: Option<String>,
+    short_note: String,
+    notes: String,
+    favorite: i64,
+    read_status: String,
+}
+
+fn read_merge_row(conn: &rusqlite::Connection, paper_id: &str) -> Result<MergeRow> {
+    conn.query_row(
+        "SELECT authors,year,venue,doi,arxiv,abstract,short_note,notes,favorite,read_status FROM papers WHERE id=? AND deleted_at IS NULL",
+        [paper_id],
+        |row| {
+            Ok(MergeRow {
+                authors: row.get(0)?,
+                year: row.get(1)?,
+                venue: row.get(2)?,
+                doi: row.get(3)?,
+                arxiv: row.get(4)?,
+                abstract_text: row.get(5)?,
+                short_note: row.get(6)?,
+                notes: row.get(7)?,
+                favorite: row.get(8)?,
+                read_status: row.get(9)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("论文不存在或已移入回收站：{paper_id}"))
+}
+
+/// FEAT-UX-02: losslessly merge duplicate paper rows into `primary_id`.
+///
+/// One transaction migrates metadata (only into empty primary fields), notes,
+/// favourite/read status, versions (identical `sha256` PDFs are skipped),
+/// blocks, annotations, chats, jobs, Zotero rows, categories and tags, then
+/// deletes the secondary rows.  Foreign-key cascade therefore never deletes
+/// migrated data.  Returns `{merged, primary}`.
+pub fn merge_papers(lib: &Library, p: &Value) -> Result<Value> {
+    let primary_id = p["primary_id"].as_str().map(str::trim).filter(|id| !id.is_empty()).ok_or_else(|| anyhow!("请选择保留的主条目"))?;
+    let raw = p["secondary_ids"].as_array().ok_or_else(|| anyhow!("请选择要合并的重复论文"))?;
+    ensure!(!raw.is_empty() && raw.len() <= 50, "一次可合并 1–50 篇重复论文");
+    let mut seen = HashSet::new();
+    let mut secondary_ids: Vec<String> = Vec::new();
+    for value in raw {
+        let id = value.as_str().ok_or_else(|| anyhow!("无效论文 ID"))?.trim();
+        if id.is_empty() || id == primary_id || !seen.insert(id.to_string()) {
+            continue;
+        }
+        secondary_ids.push(id.to_string());
+    }
+    ensure!(!secondary_ids.is_empty(), "请至少选择一篇要与主条目合并的其他论文");
+    let merged_count = secondary_ids.len();
+    {
+        let conn = lib.conn();
+        let tx = conn.unchecked_transaction()?;
+        let mut primary = read_merge_row(&tx, primary_id)?;
+        for secondary_id in &secondary_ids {
+            let secondary = read_merge_row(&tx, secondary_id)?;
+            // A running translation owns files and a job row bound to the
+            // secondary id; merging underneath it would corrupt both papers.
+            let active: i64 = tx.query_row(
+                "SELECT count(*) FROM jobs WHERE paper_id=? AND status NOT IN ('completed','failed','cancelled')",
+                [secondary_id],
+                |r| r.get(0),
+            )?;
+            ensure!(active == 0, "请等待论文 {secondary_id} 的翻译任务停止后再合并");
+
+            // 1. Fill only empty metadata, secondary order wins (the UI lists
+            //    the record the user prefers first).
+            if primary.authors.trim().is_empty() && !secondary.authors.trim().is_empty() {
+                primary.authors = secondary.authors.trim().to_string();
+            }
+            fill_blank(&mut primary.year, &secondary.year);
+            fill_blank(&mut primary.venue, &secondary.venue);
+            fill_blank(&mut primary.doi, &secondary.doi);
+            fill_blank(&mut primary.arxiv, &secondary.arxiv);
+            fill_blank(&mut primary.abstract_text, &secondary.abstract_text);
+            if primary.short_note.trim().is_empty() {
+                primary.short_note = secondary.short_note.trim().to_string();
+            }
+            primary.notes = merge_notes(&primary.notes, &secondary.notes);
+            primary.favorite = primary.favorite.max(secondary.favorite);
+            if status_rank(&secondary.read_status) > status_rank(&primary.read_status) {
+                primary.read_status = secondary.read_status.clone();
+            }
+
+            // 2. Versions: identical PDFs (same sha256 + kind) already exist on
+            //    the primary, so keep the primary row and re-point annotations.
+            let versions: Vec<(String, String, String)> = {
+                let mut stmt = tx.prepare("SELECT id,sha256,kind FROM versions WHERE paper_id=?")?;
+                let rows = stmt.query_map([secondary_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+                rows.filter_map(std::result::Result::ok).collect()
+            };
+            let mut skipped_versions: Vec<(String, String)> = Vec::new();
+            for (version_id, sha, kind) in versions {
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM versions WHERE paper_id=? AND sha256=? AND kind=? LIMIT 1",
+                        params![primary_id, sha, kind],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                match existing {
+                    Some(existing_id) => skipped_versions.push((version_id, existing_id)),
+                    None => {
+                        tx.execute("UPDATE versions SET paper_id=? WHERE id=?", params![primary_id, version_id])?;
+                    }
+                }
+            }
+            // Blocks follow their migrated version; a skipped duplicate's
+            // blocks would otherwise survive under a re-pointed paper_id.
+            tx.execute("UPDATE blocks SET paper_id=? WHERE paper_id=?", params![primary_id, secondary_id])?;
+            let _ = tx.execute("UPDATE blocks_fts SET paper_id=? WHERE paper_id=?", params![primary_id, secondary_id]);
+            for (skipped_id, _) in &skipped_versions {
+                tx.execute("DELETE FROM blocks WHERE paper_id=? AND version_id=?", params![primary_id, skipped_id])?;
+            }
+            for (skipped_id, existing_id) in &skipped_versions {
+                tx.execute(
+                    "UPDATE annotations SET version_id=? WHERE paper_id=? AND version_id=?",
+                    params![existing_id, secondary_id, skipped_id],
+                )?;
+                // Anything else that named the dropped version must follow the
+                // retained one instead of dangling after the cascade delete.
+                tx.execute(
+                    "UPDATE versions SET source_version_id=? WHERE paper_id=? AND source_version_id=?",
+                    params![existing_id, primary_id, skipped_id],
+                )?;
+                tx.execute(
+                    "UPDATE zotero_files SET version_id=? WHERE paper_id=? AND version_id=?",
+                    params![existing_id, secondary_id, skipped_id],
+                )?;
+                tx.execute(
+                    "UPDATE jobs SET output_version_id=? WHERE paper_id=? AND output_version_id=?",
+                    params![existing_id, secondary_id, skipped_id],
+                )?;
+                tx.execute(
+                    "UPDATE jobs SET source_version_id=? WHERE paper_id=? AND source_version_id=?",
+                    params![existing_id, secondary_id, skipped_id],
+                )?;
+            }
+            tx.execute("UPDATE annotations SET paper_id=? WHERE paper_id=?", params![primary_id, secondary_id])?;
+            tx.execute("UPDATE chats SET paper_id=? WHERE paper_id=?", params![primary_id, secondary_id])?;
+            tx.execute("UPDATE jobs SET paper_id=? WHERE paper_id=?", params![primary_id, secondary_id])?;
+
+            // 3. Zotero projection rows (composite keys need OR IGNORE first).
+            tx.execute("UPDATE OR IGNORE zotero_files SET paper_id=? WHERE paper_id=?", params![primary_id, secondary_id])?;
+            tx.execute("UPDATE OR IGNORE zotero_items SET paper_id=? WHERE paper_id=?", params![primary_id, secondary_id])?;
+            tx.execute("DELETE FROM zotero_items WHERE paper_id=?", [secondary_id])?;
+            tx.execute("UPDATE OR IGNORE zotero_map SET paper_id=? WHERE paper_id=?", params![primary_id, secondary_id])?;
+            tx.execute("DELETE FROM zotero_map WHERE paper_id=?", [secondary_id])?;
+
+            // 4. Link tables: copy first, then drop the secondary links.
+            tx.execute(
+                "INSERT OR IGNORE INTO paper_categories(paper_id,category_id) SELECT ?,category_id FROM paper_categories WHERE paper_id=?",
+                params![primary_id, secondary_id],
+            )?;
+            tx.execute("DELETE FROM paper_categories WHERE paper_id=?", [secondary_id])?;
+            tx.execute(
+                "INSERT OR IGNORE INTO paper_tags(paper_id,tag_id) SELECT ?,tag_id FROM paper_tags WHERE paper_id=?",
+                params![primary_id, secondary_id],
+            )?;
+            tx.execute("DELETE FROM paper_tags WHERE paper_id=?", [secondary_id])?;
+
+            // 5. Only now is it safe to delete the secondary row (cascade).
+            tx.execute("DELETE FROM papers WHERE id=?", [secondary_id])?;
+        }
+        tx.execute(
+            "UPDATE papers SET authors=?,year=?,venue=?,doi=?,arxiv=?,abstract=?,short_note=?,notes=?,favorite=?,read_status=?,updated_at=max(updated_at+1,?) WHERE id=?",
+            params![
+                primary.authors.trim(),
+                primary.year,
+                primary.venue,
+                primary.doi,
+                primary.arxiv,
+                primary.abstract_text,
+                primary.short_note.trim(),
+                primary.notes,
+                primary.favorite,
+                primary.read_status,
+                now_ms(),
+                primary_id,
+            ],
+        )?;
+        tx.commit()?;
+    }
+    Ok(json!({"merged": merged_count, "primary": lib.get_paper(primary_id)?}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +534,87 @@ mod tests {
         drop(lib);let reopened=Library::new(&root).unwrap();
         assert_eq!(reopened.taxonomy().unwrap()["categories"].as_array().unwrap().iter().find(|c|c["id"]==deep.as_str()).unwrap()["parent_id"],top);
         drop(reopened);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// FEAT-UX-02: merging must move every related row before deleting the
+    /// secondary paper (so `ON DELETE CASCADE` cannot eat migrated data), fill
+    /// only empty metadata, and stay transactional on active jobs.
+    #[test]
+    fn merge_papers_moves_versions_blocks_annotations_and_links() {
+        let root=std::env::temp_dir().join(format!("moonlight-merge-{}",uuid::Uuid::new_v4()));
+        let lib=Library::new(&root).unwrap();
+        let conn=lib.conn();
+        conn.execute("INSERT INTO papers(id,title,authors,imported_at,updated_at,notes,read_status) VALUES('p','Merged Paper','',0,0,'primary note\n\nshared','unread')",[]).unwrap();
+        conn.execute("INSERT INTO papers(id,title,authors,year,venue,doi,arxiv,abstract,imported_at,updated_at,short_note,notes,favorite,read_status) VALUES('s','Merged Paper preprint','Alice, Bob','2024','arXiv','10.1000/abc','2401.00001','Secondary abstract',0,0,'快速笔记','shared\n\nsecondary note',1,'reading')",[]).unwrap();
+        conn.execute("INSERT INTO papers(id,title,authors,imported_at,updated_at,read_status) VALUES('r','Reader Copy','',0,0,'read')",[]).unwrap();
+        conn.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,created_at) VALUES('vp-src','p','source','shared','files/shared.pdf',1,1,0)",[]).unwrap();
+        conn.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,created_at) VALUES('vp-t','p','translated','hash-t','derived/t.pdf',1,1,0)",[]).unwrap();
+        conn.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,created_at) VALUES('vs-shared','s','source','shared','files/shared.pdf',1,1,0)",[]).unwrap();
+        conn.execute("INSERT INTO versions(id,paper_id,kind,sha256,rel_path,pages,bytes,created_at) VALUES('vs-other','s','source','hash-other','files/other.pdf',2,1,0)",[]).unwrap();
+        conn.execute("INSERT INTO chats(id,paper_id,kind,question,answer,sources,model,created_at) VALUES('c1','s','ask','q','a','[]','m',0)",[]).unwrap();
+        conn.execute("INSERT INTO jobs(id,paper_id,status,created_at,updated_at) VALUES('j1','s','completed',0,0)",[]).unwrap();
+        conn.execute("INSERT INTO zotero_files(id,paper_id,attachment_key,title,content_type,rel_path,status) VALUES('zf1','s','att','PDF','application/pdf','files/other.pdf','copied')",[]).unwrap();
+        conn.execute("INSERT INTO zotero_items(source_id,library_id,item_key,paper_id,metadata,notes_html) VALUES('zot',1,'K1','s','{}','[]')",[]).unwrap();
+        conn.execute("INSERT INTO zotero_map(item_key,paper_id,imported_at) VALUES('K1','s',0)",[]).unwrap();
+        drop(conn);
+        let folder=folder_save(&lib,&json!({"name":"Merged folder"})).unwrap()["id"].as_str().unwrap().to_string();
+        bulk_assign(&lib,&json!({"paper_ids":["p","s"],"category_id":folder,"tags":["shared-tag"]})).unwrap();
+        bulk_assign(&lib,&json!({"paper_ids":["s"],"tags":["secondary-tag"]})).unwrap();
+        drop(lib.conn());
+        lib.set_blocks("p","vp-src",0,vec![json!({"text":"primary block","bbox":[1,1,10,10]})]).unwrap();
+        lib.set_blocks("s","vs-shared",0,vec![json!({"text":"duplicate block","bbox":[1,1,10,10]})]).unwrap();
+        lib.set_blocks("s","vs-other",1,vec![json!({"text":"secondary block","bbox":[1,1,10,10]})]).unwrap();
+        lib.add_annotation("p",0,json!([[1,1,10,10]]),"primary","yellow","","source",Some("vp-src")).unwrap();
+        let duplicate_annotation=lib.add_annotation("s",0,json!([[1,1,10,10]]),"dup annotation","yellow","","source",Some("vs-shared")).unwrap()["id"].as_str().unwrap().to_string();
+        lib.add_annotation("s",1,json!([[1,1,10,10]]),"other annotation","yellow","","source",Some("vs-other")).unwrap();
+
+        // The UI repeats the primary and may include the same secondary twice.
+        let merged=merge_papers(&lib,&json!({"primary_id":"p","secondary_ids":["s","s","p","r"]})).unwrap();
+        assert_eq!(merged["merged"],2);
+        assert_eq!(merged["primary"]["id"],json!("p"));
+        assert_eq!(merged["primary"]["title"],json!("Merged Paper"),"the primary title is never replaced");
+        assert_eq!(merged["primary"]["authors"],json!("Alice, Bob"));
+        assert_eq!(merged["primary"]["year"],json!("2024"));
+        assert_eq!(merged["primary"]["venue"],json!("arXiv"));
+        assert_eq!(merged["primary"]["doi"],json!("10.1000/abc"));
+        assert_eq!(merged["primary"]["arxiv"],json!("2401.00001"));
+        assert_eq!(merged["primary"]["abstract"],json!("Secondary abstract"));
+        assert_eq!(merged["primary"]["short_note"],json!("快速笔记"));
+        assert_eq!(merged["primary"]["favorite"],json!(true));
+        assert_eq!(merged["primary"]["read_status"],json!("read"),"read > reading > unread");
+        let notes=merged["primary"]["notes"].as_str().unwrap();
+        assert_eq!(notes,"primary note\n\nshared\n\nsecondary note","notes are appended and deduplicated: {notes:?}");
+        assert_eq!(notes.matches("shared").count(),1);
+
+        let version_ids=|lib:&Library|->Vec<String>{let conn=lib.conn();let mut stmt=conn.prepare("SELECT id FROM versions WHERE paper_id='p' ORDER BY id").unwrap();stmt.query_map([],|r|r.get(0)).unwrap().filter_map(Result::ok).collect()};
+        assert_eq!(version_ids(&lib),vec!["vp-src","vp-t","vs-other"],"the duplicate sha256 PDF is skipped, the rest migrates");
+        assert!(lib.get_paper("s").is_err());assert!(lib.get_paper("r").is_err());
+        let block_texts:Vec<String>={let conn=lib.conn();let mut stmt=conn.prepare("SELECT text FROM blocks WHERE paper_id='p' ORDER BY text").unwrap();stmt.query_map([],|r|r.get(0)).unwrap().filter_map(Result::ok).collect()};
+        assert_eq!(block_texts,vec!["primary block","secondary block"],"migrated blocks survive; skipped-duplicate blocks are removed");
+        let annotation_version:String=lib.conn().query_row("SELECT version_id FROM annotations WHERE id=?",[&duplicate_annotation],|r|r.get(0)).unwrap();
+        assert_eq!(annotation_version,"vp-src","an annotation on a duplicate PDF follows the retained version");
+        assert_eq!(lib.list_annotations("p").unwrap().len(),3);
+        assert_eq!(lib.conn().query_row("SELECT COUNT(*) FROM chats WHERE paper_id='p'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(lib.conn().query_row("SELECT COUNT(*) FROM jobs WHERE paper_id='p'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(lib.conn().query_row("SELECT COUNT(*) FROM zotero_files WHERE paper_id='p'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(lib.conn().query_row("SELECT COUNT(*) FROM zotero_items WHERE paper_id='p'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(lib.conn().query_row("SELECT COUNT(*) FROM zotero_map WHERE paper_id='p'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(lib.conn().query_row("SELECT COUNT(*) FROM paper_categories WHERE paper_id='p' AND category_id=?",[&folder],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(lib.conn().query_row("SELECT COUNT(*) FROM paper_tags WHERE paper_id='p'",[],|r|r.get::<_,i64>(0)).unwrap(),2);
+
+        // Validation: missing secondaries, unknown ids and active jobs roll back.
+        assert!(merge_papers(&lib,&json!({"primary_id":"p","secondary_ids":[]})).is_err());
+        assert!(merge_papers(&lib,&json!({"primary_id":"missing","secondary_ids":["p"]})).is_err());
+        assert!(merge_papers(&lib,&json!({"primary_id":"p","secondary_ids":["does-not-exist"]})).is_err());
+        lib.conn().execute("INSERT INTO papers(id,title,authors,imported_at,updated_at) VALUES('x','Active','',0,0)",[]).unwrap();
+        lib.conn().execute("INSERT INTO jobs(id,paper_id,status,created_at,updated_at) VALUES('jx','x','queued',0,0)",[]).unwrap();
+        let error=merge_papers(&lib,&json!({"primary_id":"p","secondary_ids":["x"]})).unwrap_err().to_string();
+        assert!(error.contains("翻译任务"),"{error}");
+        assert!(lib.get_paper("x").is_ok(),"a refused merge must not delete anything");
+        lib.conn().execute("UPDATE jobs SET status='completed' WHERE id='jx'",[]).unwrap();
+        assert_eq!(merge_papers(&lib,&json!({"primary_id":"p","secondary_ids":["x"]})).unwrap()["merged"],1);
+        assert!(lib.get_paper("x").is_err());
+
+        drop(lib);std::fs::remove_dir_all(root).unwrap();
     }
 }

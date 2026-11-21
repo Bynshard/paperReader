@@ -1,5 +1,7 @@
 # 给 DS 的开发执行任务
 
+> 当前基线已实现 Rust/SQLite 与 Electron 桌面端，Windows 包已通过 CI。本文保留初始需求和早期候选，不再作为重新选型或从零开发的指令。请优先按 [当前剩余工作与交付标准](docs/PRODUCT_READINESS.md) 中的 R01–R17 推进，并复用现有已验收代码。
+
 请实现一个本地优先的独立桌面论文管理软件。先阅读 [技术设计](docs/DESIGN.md) 和 [验证计划](docs/VALIDATION.md)，按阶段交付。用户最重视的是 [参考图](docs/assets/reference-translation.png) 中的原位翻译：英文与中文保持相同页型、栏位和段落的大致位置，公式、图片和图注关系清楚。
 
 ## 产品要求

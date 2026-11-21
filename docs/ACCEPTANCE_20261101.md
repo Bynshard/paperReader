@@ -1,5 +1,7 @@
 # 本地验收记录 · 2026-11-01
 
+> 本文和配套 JSON 保留该批本地验收时的状态。后续已推送 `47b96a3`，并以 `744431d` 修复 ASAR 路径检查；[Windows CI #6](https://github.com/Bynshard/paperReader/actions/runs/41306172222) 已通过真实包启动、PDF/OCR。当前待办及发布状态见 [PRODUCT_READINESS.md](PRODUCT_READINESS.md)。
+
 结论：主要本地工作流通过；性能尚未全部达标，保留预发布定位。本轮未提交、推送或发布。
 
 ## 验证范围

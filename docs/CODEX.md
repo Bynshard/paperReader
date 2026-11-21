@@ -4,8 +4,8 @@
 
 ## 使用
 
-1. 本机安装官方 Codex CLI（本轮验证版本 `codex-cli 0.159.2`）。默认从 PATH、`~/.local/bin/codex`、`~/.cargo/bin/codex` 查找，也可以设置主进程环境变量 `MOONLIGHT_CODEX_BIN` 为可执行文件路径。
-2. 构建最新 Rust 核心与桌面前端后启动 Electron。
+1. Windows 用户下载最新通过 CI 的测试包，内含官方 App Server，无需另外安装 Codex CLI。源码开发方式默认从 PATH、`~/.local/bin/codex`、`~/.cargo/bin/codex` 查找，也可以设置主进程环境变量 `MOONLIGHT_CODEX_BIN`。
+2. 启动测试包；源码开发时先构建最新 Rust 核心与桌面前端。
 3. 打开“设置与状态”，点击“通过浏览器登录 Codex”，在系统浏览器完成账号认证。
 4. 将“问答服务”选择为“Codex 账号额度”。可选择服务返回的模型，或使用 Codex 默认模型。
 5. 在论文阅读助手中总结本页、解释选区、翻译选区或连续提问。支持流式输出、停止生成、原文位置跳转和最近 50 条历史记录回看。
@@ -22,7 +22,7 @@
 - 不继承父进程的 OpenAI API Key、Codex 会话标识和模型网关环境变量。前端不接触认证 token。
 - 纯阅读会话使用独立空工作目录、只读沙箱、关闭命令执行、联网搜索、应用连接和多代理；拒绝所有服务端工具/权限请求。官方 CLI 仍负责落实底层沙箱。
 - 每次回答创建临时线程，完成后取消订阅，避免在服务内积累活动线程。最近最多 6 轮已完成的同一原文版本对话通过本地历史重建，单条历史截断，原文上下文最多 32,000 字，问题最多 16,000 字。
-- `ai_prepare` / `ai_save` / `ai_history` Rust RPC 不依赖 API 网关。回答成功后才写 SQLite `chats`；取消、失败和空回答不写入。历史有论文与时间组合索引，读取最多 50 条。历史仅本地保存，当前云同步不承诺同步这些对话。
+- `ai_prepare` / `ai_save` / `ai_history` Rust RPC 不依赖 API 网关。回答成功后才写 SQLite `chats`；取消、失败和空回答不写入。历史有论文与时间组合索引，读取最多 50 条。历史写入本地 SQLite，当前元数据同步包含 `chats`；真实供应商端的往返和历史冲突仍需验收。
 - 流式界面更新合并为最多每 50ms 一次。进程复用和有界上下文减少启动、渲染与重复传输开销。
 
 ## 验证与边界
@@ -59,9 +59,9 @@ node app/e2e/codex.mjs
 
 已补齐 AI 回答保存到笔记/导出、上下文截断提示与无效引用警告，并修复页尾、文档尾部检索缺失；已保存到 `chats` 的回答可随完整备份恢复。详见 [发布验收](RELEASE_VALIDATION.md)。
 
-## 本地待验收改进：上下文、扫描页与翻译配置
+## 上下文、扫描页与翻译配置
 
-以下改动尚未提交、推送或发布，现有 `v0.1.0` 下载包不包含它们。
+以下改动已推送，包含于 [Windows CI #6](https://github.com/Bynshard/paperReader/actions/runs/41306172222) 测试包；旧 `v0.1.0` Release 未更新。
 
 ### 问答的实际链路
 
@@ -85,9 +85,11 @@ node app/e2e/codex.mjs
 
 ### 验证状态和剩余工作
 
-- 已完成 TypeScript 无输出类型检查、主进程及打包/测试脚本语法检查、差异空白检查。
-- 已补配置加密与端点切换、当前版本历史隔离、无正文拦截、OCR 持久化/检索等回归用例；Windows E2E 加入实际包内离线 OCR 与文字层验收，均尚未运行。
-- 按用户要求，本轮不构建、不运行测试、不提交、不推送，因此新 Rust 逻辑尚未编译验证，Windows 资源协议与真实 OCR 也未验收。
+当前任务以 [R06/R07 和整体交付清单](PRODUCT_READINESS.md) 为准。
+
+- Rust、React、Node 与生产构建已实际通过；配置加密调用、端点切换、版本历史隔离、无正文拦截、OCR 持久化/检索等均有回归。系统凭据服务仍需目标用户实机验证。
+- Windows CI #6 已运行实际包内离线 OCR、资源协议、可选文字层和正文索引；Linux Electron 另验证纯图片 PDF 自动识别并构建 AI 上下文。
+- 当前 Windows 包的真实新账号网页登录与真实论文推理、API 模式的流式/取消一致性仍未完成验收。
 - 后续仍需真实双栏/扫描/公式/表格数据集、OCR 延迟与峰值内存、语义检索、token 预算控制、API 服务兼容性、全文翻译引擎安装闭环等验收。
 
 参考：[官方 App Server 协议](https://developers.openai.com/codex/app-server)、[Tesseract.js](https://github.com/naptha/tesseract.js)、[上游 OCR 本地资源配置](https://github.com/naptha/tesseract.js/blob/master/docs/local-installation.md)。
