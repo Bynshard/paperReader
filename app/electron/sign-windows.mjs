@@ -24,12 +24,21 @@ function signingConfig() {
 }
 
 async function signOne(config, file) {
-  await run(config.signtool, [
-    "sign", "/fd", "sha256", "/td", "sha256",
-    "/tr", config.timestamp,
-    "/f", config.pfx, "/p", config.password,
-    file,
-  ], { windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+  try {
+    await run(config.signtool, [
+      "sign", "/fd", "sha256", "/td", "sha256",
+      "/tr", config.timestamp,
+      "/f", config.pfx, "/p", config.password,
+      file,
+    ], { windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+  } catch (error) {
+    console.warn(`[sign] timestamped signing failed for ${path.basename(file)}, retrying without TSA: ${error.message}`);
+    await run(config.signtool, [
+      "sign", "/fd", "sha256",
+      "/f", config.pfx, "/p", config.password,
+      file,
+    ], { windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+  }
   console.log(`[sign] ${path.basename(file)}`);
 }
 
