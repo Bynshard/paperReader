@@ -7,38 +7,38 @@ android {
   compileSdk 35
 
   defaultConfig {
-    applicationId 'io.moonlight.pad'
-    minSdk 26
-    targetSdk 35
-    versionCode (project.findProperty('moonlightVersionCode') ?: '1').toInteger()
-    versionName project.findProperty('moonlightVersion') ?: '0.1.0'
+    applicationId = 'io.moonlight.pad'
+    minSdk = 26
+    targetSdk = 35
+    versionCode = (project.findProperty('moonlightVersionCode') ?: '1').toString().toInteger()
+    versionName = (project.findProperty('moonlightVersion') ?: '0.1.0').toString()
   }
 
   def keystorePath = System.getenv('MOONLIGHT_ANDROID_KEYSTORE')
   def keystorePassword = System.getenv('MOONLIGHT_ANDROID_KEYSTORE_PASSWORD')
   def keyAliasName = System.getenv('MOONLIGHT_ANDROID_KEY_ALIAS')
-  def keyPassword = System.getenv('MOONLIGHT_ANDROID_KEY_PASSWORD')
+  def keyPasswordEnv = System.getenv('MOONLIGHT_ANDROID_KEY_PASSWORD')
 
   signingConfigs {
     if (keystorePath && keystorePassword && keyAliasName) {
       release {
-        storeFile file(keystorePath)
-        storePassword keystorePassword
-        keyAlias keyAliasName
-        keyPassword keyPassword ?: keystorePassword
+        storeFile = file(keystorePath)
+        storePassword = keystorePassword
+        keyAlias = keyAliasName
+        keyPassword = keyPasswordEnv ?: keystorePassword
       }
     }
   }
 
   buildTypes {
     debug {
-      applicationIdSuffix '.debug'
-      versionNameSuffix '-debug'
+      applicationIdSuffix = '.debug'
+      versionNameSuffix = '-debug'
     }
     release {
-      minifyEnabled false
+      minifyEnabled = false
       if (keystorePath && keystorePassword && keyAliasName) {
-        signingConfig signingConfigs.release
+        signingConfig = signingConfigs.release
       }
       proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
     }
