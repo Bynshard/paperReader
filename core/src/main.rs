@@ -884,6 +884,7 @@ mod tests {
         let info = handler("app_info", &json!({})).unwrap();
         assert_eq!(info["headless"], true);
 
+        drop(handler);
         drop(lib);
         std::fs::remove_dir_all(root).unwrap();
     }
